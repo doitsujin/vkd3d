@@ -2114,7 +2114,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetContainingOutput(dxgi_swapch
 static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetFrameStatistics(dxgi_swapchain_iface *iface,
         DXGI_FRAME_STATISTICS *stats)
 {
-    FIXME("iface %p, stats %p stub!\n", iface, stats);
+    FIXME_ONCE("iface %p, stats %p stub!\n", iface, stats);
 
     return E_NOTIMPL;
 }
