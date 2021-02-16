@@ -425,6 +425,9 @@ static void vkd3d_memory_chunk_insert_range(struct vkd3d_memory_chunk *chunk,
         return;
     }
 
+    if (index > chunk->free_ranges_count)
+        ERR("index (%"PRIu64") > chunk->free_ranges_count (%"PRIu64")!\n");
+
     memmove(&chunk->free_ranges[index + 1], &chunk->free_ranges[index],
             sizeof(*chunk->free_ranges) * (chunk->free_ranges_count - index));
 
@@ -435,10 +438,103 @@ static void vkd3d_memory_chunk_insert_range(struct vkd3d_memory_chunk *chunk,
 
 static void vkd3d_memory_chunk_remove_range(struct vkd3d_memory_chunk *chunk, size_t index)
 {
+    if (index >= chunk->free_ranges_count)
+        ERR("index (%"PRIu64") >= chunk->free_ranges_count (%"PRIu64")!\n");
+
     chunk->free_ranges_count--;
 
     memmove(&chunk->free_ranges[index], &chunk->free_ranges[index + 1],
             sizeof(*chunk->free_ranges) * (chunk->free_ranges_count - index));
+}
+
+static bool vkd3d_memory_chunk_validate_free_list(struct vkd3d_memory_chunk *chunk,
+        const struct vkd3d_memory_allocation *allocation, bool must_include)
+{
+    bool range_overlapped, range_contained;
+    struct vkd3d_memory_free_range prev;
+    unsigned int i;
+
+    if (chunk->free_ranges_count > chunk->free_ranges_size)
+    {
+        ERR("Free range count exceeds capacity.\n");
+        goto dump;
+    }
+
+    range_overlapped = false;
+    range_contained = false;
+
+    for (i = 0; i < chunk->free_ranges_count; i++)
+    {
+        const struct vkd3d_memory_free_range *range = &chunk->free_ranges[i];
+
+        if (!range->length || range->length > chunk->allocation.resource.size)
+        {
+            ERR("Range %u has an invalid size.\n", i);
+            goto dump;
+        }
+
+        if (range->offset >= chunk->allocation.resource.size)
+        {
+            ERR("Range %u has an invalid offset.\n", i);
+            goto dump;
+        }
+
+        if (range->offset + range->length > chunk->allocation.resource.size)
+        {
+            ERR("Range %u exceeds bounds.\n", i);
+            goto dump;
+        }
+
+        if (i)
+        {
+            if (range->offset < prev.offset + prev.length)
+            {
+                ERR("Range %u overlaps with previous range.\n", i);
+                goto dump;
+            }
+
+            if (range->offset == prev.offset + prev.length)
+            {
+                ERR("Range %u is adjacent to previous range.\n", i);
+                goto dump;
+            }
+        }
+
+        if (allocation)
+        {
+            range_overlapped |= range->offset < allocation->offset + allocation->resource.size &&
+                    range->offset + range->length > allocation->offset;
+            range_contained |= range->offset <= allocation->offset &&
+                    range->offset + range->length >= allocation->offset + allocation->resource.size;
+        }
+
+        prev = *range;
+    }
+
+    if (allocation)
+    {
+        if ((must_include && !range_contained) || (!must_include && range_overlapped))
+        {
+            ERR("Allocation (offset = %"PRIu64", size = %"PRIu64") %s be contained in free list.\n",
+                    allocation->offset, allocation->resource.size, must_include ? "should" : "should not");
+            goto dump;
+        }
+    }
+
+    return true;
+
+dump:
+    ERR("--- Free list for chunk %p (count = %"PRIu64", capacity = %"PRIu64") ---\n",
+            chunk, chunk->free_ranges_count, chunk->free_ranges_size);
+
+    for (i = 0; i < chunk->free_ranges_count; i++)
+    {
+        const struct vkd3d_memory_free_range *range = &chunk->free_ranges[i];
+        ERR("%4u : %"PRIu64" - %"PRIu64")\n", i, range->offset, range->offset + range->length);
+    }
+
+    ERR("Chunk size: %"PRIu64" bytes.\n", chunk->allocation.resource.size);
+    return false;
 }
 
 static HRESULT vkd3d_memory_chunk_allocate_range(struct vkd3d_memory_chunk *chunk, const VkMemoryRequirements *memory_requirements,
@@ -511,6 +607,12 @@ static HRESULT vkd3d_memory_chunk_allocate_range(struct vkd3d_memory_chunk *chun
         vkd3d_memory_chunk_remove_range(chunk, pick_index);
     }
 
+    if (!vkd3d_memory_chunk_validate_free_list(chunk, allocation, false))
+    {
+        ERR("After allocating range (offset = %"PRIu64", size = %"PRIu64") [index = %"PRIu64", l_length = %"PRIu64", r_length %"PRIu64"]\n",
+                allocation->offset, allocation->resource.size, pick_index, l_length, r_length);
+    }
+
     return S_OK;
 }
 
@@ -580,6 +682,12 @@ static void vkd3d_memory_chunk_free_range(struct vkd3d_memory_chunk *chunk, cons
     {
         vkd3d_memory_chunk_insert_range(chunk, index,
                 allocation->offset, allocation->resource.size);
+    }
+
+    if (!vkd3d_memory_chunk_validate_free_list(chunk, allocation, true))
+    {
+        ERR("After freeing range (offset = %"PRIu64", size = %"PRIu64") [index = %"PRIu64", adjacent_l = %u, adjacent_r %u]\n",
+                allocation->offset, allocation->resource.size, index, adjacent_l, adjacent_r);
     }
 }
 

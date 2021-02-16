@@ -2122,7 +2122,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetFrameStatistics(dxgi_swapcha
 static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetLastPresentCount(dxgi_swapchain_iface *iface,
         UINT *last_present_count)
 {
-    FIXME("iface %p, last_present_count %p stub!\n", iface, last_present_count);
+    FIXME_ONCE("iface %p, last_present_count %p stub!\n", iface, last_present_count);
 
     return E_NOTIMPL;
 }
