@@ -182,7 +182,6 @@ struct d3d12_swapchain
 
     VkSwapchainKHR vk_swapchain;
     VkSurfaceKHR vk_surface;
-    VkFence vk_fence;
     VkCommandPool vk_cmd_pool;
     VkImage vk_images[DXGI_MAX_SWAP_CHAIN_BUFFERS];
     VkImage vk_swapchain_images[DXGI_MAX_SWAP_CHAIN_BUFFERS];
@@ -1251,24 +1250,6 @@ static HRESULT d3d12_swapchain_create_buffers(struct d3d12_swapchain *swapchain,
     return S_OK;
 }
 
-static VkResult d3d12_swapchain_wait_and_reset_swapchain_fence(struct d3d12_swapchain *swapchain)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
-    VkDevice vk_device = d3d12_swapchain_device(swapchain)->vk_device;
-    VkFence vk_fence = swapchain->vk_fence;
-    VkResult vr;
-
-    if ((vr = vk_procs->vkWaitForFences(vk_device, 1, &vk_fence, VK_TRUE, UINT64_MAX)) != VK_SUCCESS)
-    {
-        ERR("Failed to wait for fence, vr %d.\n", vr);
-        return vr;
-    }
-    if ((vr = vk_procs->vkResetFences(vk_device, 1, &vk_fence)) < 0)
-        ERR("Failed to reset fence, vr %d.\n", vr);
-
-    return vr;
-}
-
 static VkResult d3d12_swapchain_acquire_next_vulkan_image(struct d3d12_swapchain *swapchain,
         const struct d3d12_swapchain_semaphores *semaphores, uint32_t *index)
 {
@@ -1572,10 +1553,7 @@ static void d3d12_swapchain_destroy(struct d3d12_swapchain *swapchain)
     vkd3d_private_store_destroy(&swapchain->private_store);
 
     if (swapchain->command_queue->device->vk_device)
-    {
-        vk_procs->vkDestroyFence(swapchain->command_queue->device->vk_device, swapchain->vk_fence, NULL);
         vk_procs->vkDestroySwapchainKHR(swapchain->command_queue->device->vk_device, swapchain->vk_swapchain, NULL);
-    }
 
     vk_procs->vkDestroySurfaceKHR(d3d12_swapchain_device(swapchain)->vkd3d_instance->vk_instance, swapchain->vk_surface, NULL);
 
@@ -2543,15 +2521,12 @@ static HRESULT d3d12_swapchain_init(struct d3d12_swapchain *swapchain, IDXGIFact
     const struct vkd3d_vk_device_procs *vk_procs = &queue->device->vk_procs;
     VkWin32SurfaceCreateInfoKHR surface_desc;
     VkPhysicalDevice vk_physical_device;
-    VkFenceCreateInfo fence_desc;
     uint32_t queue_family_index;
     VkSurfaceKHR vk_surface;
     VkInstance vk_instance;
     IDXGIAdapter *adapter;
     IDXGIOutput *target;
     VkBool32 supported;
-    VkDevice vk_device;
-    VkFence vk_fence;
     VkResult vr;
     HRESULT hr;
 
@@ -2636,7 +2611,6 @@ static HRESULT d3d12_swapchain_init(struct d3d12_swapchain *swapchain, IDXGIFact
 
     vk_instance = queue->device->vkd3d_instance->vk_instance;
     vk_physical_device = queue->device->vk_physical_device;
-    vk_device = queue->device->vk_device;
 
     vkd3d_private_store_init(&swapchain->private_store);
 
@@ -2671,17 +2645,6 @@ static HRESULT d3d12_swapchain_init(struct d3d12_swapchain *swapchain, IDXGIFact
         d3d12_swapchain_destroy(swapchain);
         return hr;
     }
-
-    fence_desc.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fence_desc.pNext = NULL;
-    fence_desc.flags = 0;
-    if ((vr = vk_procs->vkCreateFence(vk_device, &fence_desc, NULL, &vk_fence)) < 0)
-    {
-        WARN("Failed to create Vulkan fence, vr %d.\n", vr);
-        d3d12_swapchain_destroy(swapchain);
-        return hresult_from_vk_result(vr);
-    }
-    swapchain->vk_fence = vk_fence;
 
     swapchain->current_buffer_index = 0;
 
