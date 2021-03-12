@@ -1269,30 +1269,28 @@ static VkResult d3d12_swapchain_wait_and_reset_swapchain_fence(struct d3d12_swap
     return vr;
 }
 
-static VkResult d3d12_swapchain_acquire_next_vulkan_image(struct d3d12_swapchain *swapchain, uint32_t *index)
+static VkResult d3d12_swapchain_acquire_next_vulkan_image(struct d3d12_swapchain *swapchain,
+        const struct d3d12_swapchain_semaphores *semaphores, uint32_t *index)
 {
     const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
     VkDevice vk_device = d3d12_swapchain_device(swapchain)->vk_device;
-    VkFence vk_fence = swapchain->vk_fence;
     VkResult vr;
 
     *index = INVALID_VK_IMAGE_INDEX;
 
     if ((vr = vk_procs->vkAcquireNextImageKHR(vk_device, swapchain->vk_swapchain,
-            UINT64_MAX, VK_NULL_HANDLE, vk_fence, index)))
+            UINT64_MAX, semaphores->acquire, VK_NULL_HANDLE, index)))
     {
-        if (vr == VK_SUBOPTIMAL_KHR)
+        if (vr == VK_SUBOPTIMAL_KHR || vr == VK_ERROR_OUT_OF_DATE_KHR)
         {
-            /* Suboptimal is still considered success, so make sure to wait and reset fence here, but we always want
-             * to recreate swapchains in this case. */
-            d3d12_swapchain_wait_and_reset_swapchain_fence(swapchain);
+            /* Suboptimal is still considered success, but we
+             * always want to recreate swapchains in this case. */
             return VK_ERROR_OUT_OF_DATE_KHR;
         }
         WARN("Failed to acquire next Vulkan image, vr %d.\n", vr);
         return vr;
     }
 
-    vr = d3d12_swapchain_wait_and_reset_swapchain_fence(swapchain);
     return vr;
 }
 
@@ -1705,6 +1703,7 @@ static HRESULT d3d12_swapchain_set_sync_interval(struct d3d12_swapchain *swapcha
 static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain, VkQueue vk_queue)
 {
     const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
+    const VkPipelineStageFlags wait_stage_mask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     const struct d3d12_swapchain_semaphores *semaphores;
     VkCommandBuffer vk_cmd_buffer;
     VkPresentInfoKHR present_info;
@@ -1718,15 +1717,15 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
 
     semaphores = &swapchain->semaphores[swapchain->current_buffer_index];
 
-    if ((vr = d3d12_swapchain_acquire_next_vulkan_image(swapchain, &image_index)) < 0)
+    if ((vr = d3d12_swapchain_acquire_next_vulkan_image(swapchain, semaphores, &image_index)) < 0)
         return vr;
 
     assert(image_index < swapchain->buffer_count);
 
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present_info.pNext = NULL;
-    present_info.waitSemaphoreCount = 0;
-    present_info.pWaitSemaphores = NULL;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &semaphores->present;
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &swapchain->vk_swapchain;
     present_info.pImageIndices = &image_index;
@@ -1746,9 +1745,9 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
 
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.pNext = NULL;
-    submit_info.waitSemaphoreCount = 0;
-    submit_info.pWaitSemaphores = NULL;
-    submit_info.pWaitDstStageMask = NULL;
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = &semaphores->acquire;
+    submit_info.pWaitDstStageMask = &wait_stage_mask;
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &vk_cmd_buffer;
     submit_info.signalSemaphoreCount = 1;
@@ -1759,9 +1758,6 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
         ERR("Failed to blit swapchain buffer, vr %d.\n", vr);
         return vr;
     }
-
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &semaphores->present;
 
     if ((vr = vk_procs->vkQueuePresentKHR(vk_queue, &present_info)) >= 0)
     {
