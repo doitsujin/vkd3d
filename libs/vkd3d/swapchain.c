@@ -205,7 +205,6 @@ struct d3d12_swapchain
 
     struct vkd3d_swapchain_info pipeline;
 
-    uint32_t vk_image_index;
     unsigned int current_buffer_index;
 
     struct d3d12_command_queue *command_queue;
@@ -1270,17 +1269,17 @@ static VkResult d3d12_swapchain_wait_and_reset_swapchain_fence(struct d3d12_swap
     return vr;
 }
 
-static VkResult d3d12_swapchain_acquire_next_vulkan_image(struct d3d12_swapchain *swapchain)
+static VkResult d3d12_swapchain_acquire_next_vulkan_image(struct d3d12_swapchain *swapchain, uint32_t *index)
 {
     const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
     VkDevice vk_device = d3d12_swapchain_device(swapchain)->vk_device;
     VkFence vk_fence = swapchain->vk_fence;
     VkResult vr;
 
-    swapchain->vk_image_index = INVALID_VK_IMAGE_INDEX;
+    *index = INVALID_VK_IMAGE_INDEX;
 
-    if ((vr = vk_procs->vkAcquireNextImageKHR(vk_device, swapchain->vk_swapchain, UINT64_MAX,
-            VK_NULL_HANDLE, vk_fence, &swapchain->vk_image_index)))
+    if ((vr = vk_procs->vkAcquireNextImageKHR(vk_device, swapchain->vk_swapchain,
+            UINT64_MAX, VK_NULL_HANDLE, vk_fence, index)))
     {
         if (vr == VK_SUBOPTIMAL_KHR)
         {
@@ -1467,7 +1466,7 @@ static HRESULT d3d12_swapchain_create_vulkan_swapchain(struct d3d12_swapchain *s
         vk_swapchain_desc.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
         vk_swapchain_desc.presentMode = swapchain->present_mode;
         vk_swapchain_desc.clipped = VK_TRUE;
-        vk_swapchain_desc.oldSwapchain = swapchain->vk_swapchain;
+        vk_swapchain_desc.oldSwapchain = VK_NULL_HANDLE;
         if ((vr = vk_procs->vkCreateSwapchainKHR(vk_device, &vk_swapchain_desc, NULL, &vk_swapchain)) < 0)
         {
             WARN("Failed to create Vulkan swapchain, vr %d.\n", vr);
@@ -1483,8 +1482,6 @@ static HRESULT d3d12_swapchain_create_vulkan_swapchain(struct d3d12_swapchain *s
     swapchain->vk_swapchain = vk_swapchain;
     swapchain->vk_swapchain_width = width;
     swapchain->vk_swapchain_height = height;
-
-    swapchain->vk_image_index = INVALID_VK_IMAGE_INDEX;
 
     if (swapchain->vk_swapchain != VK_NULL_HANDLE)
     {
@@ -1712,6 +1709,7 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
     VkCommandBuffer vk_cmd_buffer;
     VkPresentInfoKHR present_info;
     VkSubmitInfo submit_info;
+    uint32_t image_index;
     VkResult vr;
 
     /* Dummy present by doing nothing. */
@@ -1720,13 +1718,10 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
 
     semaphores = &swapchain->semaphores[swapchain->current_buffer_index];
 
-    if (swapchain->vk_image_index == INVALID_VK_IMAGE_INDEX)
-    {
-        if ((vr = d3d12_swapchain_acquire_next_vulkan_image(swapchain)) < 0)
-            return vr;
-    }
+    if ((vr = d3d12_swapchain_acquire_next_vulkan_image(swapchain, &image_index)) < 0)
+        return vr;
 
-    assert(swapchain->vk_image_index < swapchain->buffer_count);
+    assert(image_index < swapchain->buffer_count);
 
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present_info.pNext = NULL;
@@ -1734,10 +1729,10 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
     present_info.pWaitSemaphores = NULL;
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &swapchain->vk_swapchain;
-    present_info.pImageIndices = &swapchain->vk_image_index;
+    present_info.pImageIndices = &image_index;
     present_info.pResults = NULL;
 
-    vk_cmd_buffer = swapchain->vk_cmd_buffers[swapchain->vk_image_index];
+    vk_cmd_buffer = swapchain->vk_cmd_buffers[image_index];
 
     if ((vr = vk_procs->vkResetCommandBuffer(vk_cmd_buffer, 0)) < 0)
     {
@@ -1746,7 +1741,7 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
     }
 
     if ((vr = d3d12_swapchain_record_swapchain_blit(swapchain,
-            vk_cmd_buffer, swapchain->vk_image_index, swapchain->current_buffer_index)) < 0)
+            vk_cmd_buffer, image_index, swapchain->current_buffer_index)) < 0)
         return vr;
 
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1770,7 +1765,6 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
 
     if ((vr = vk_procs->vkQueuePresentKHR(vk_queue, &present_info)) >= 0)
     {
-        swapchain->vk_image_index = INVALID_VK_IMAGE_INDEX;
         /* Could get SUBOPTIMAL here. Deal with it later. */
         vr = VK_SUCCESS;
     }
