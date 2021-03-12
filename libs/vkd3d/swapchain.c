@@ -164,6 +164,12 @@ struct d3d12_swapchain_state
 
 typedef IDXGISwapChain4 dxgi_swapchain_iface;
 
+struct d3d12_swapchain_semaphores
+{
+    VkSemaphore acquire;
+    VkSemaphore present;
+};
+
 struct d3d12_swapchain
 {
     dxgi_swapchain_iface IDXGISwapChain_iface;
@@ -183,7 +189,7 @@ struct d3d12_swapchain
     VkImageView vk_swapchain_image_views[DXGI_MAX_SWAP_CHAIN_BUFFERS];
     VkFramebuffer vk_framebuffers[DXGI_MAX_SWAP_CHAIN_BUFFERS];
     VkCommandBuffer vk_cmd_buffers[DXGI_MAX_SWAP_CHAIN_BUFFERS];
-    VkSemaphore vk_semaphores[DXGI_MAX_SWAP_CHAIN_BUFFERS];
+    struct d3d12_swapchain_semaphores semaphores[DXGI_MAX_SWAP_CHAIN_BUFFERS];
     ID3D12Resource *buffers[DXGI_MAX_SWAP_CHAIN_BUFFERS];
     unsigned int buffer_count;
     unsigned int vk_swapchain_width;
@@ -1108,16 +1114,52 @@ static HRESULT d3d12_swapchain_create_framebuffers(struct d3d12_swapchain *swapc
     return S_OK;
 }
 
+static void d3d12_swapchain_semaphores_destroy(struct d3d12_swapchain *swapchain, struct d3d12_swapchain_semaphores *semaphores)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
+    VkDevice vk_device = d3d12_swapchain_device(swapchain)->vk_device;
+
+    vk_procs->vkDestroySemaphore(vk_device, semaphores->acquire, NULL);
+    vk_procs->vkDestroySemaphore(vk_device, semaphores->present, NULL);
+
+    semaphores->acquire = VK_NULL_HANDLE;
+    semaphores->present = VK_NULL_HANDLE;
+}
+
+static HRESULT d3d12_swapchain_semaphores_create(struct d3d12_swapchain *swapchain, struct d3d12_swapchain_semaphores *semaphores)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
+    VkDevice vk_device = d3d12_swapchain_device(swapchain)->vk_device;
+    VkSemaphoreCreateInfo semaphore_info;
+    VkResult vr;
+
+    assert(!semaphores->acquire && !semaphores->present);
+
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    semaphore_info.pNext = NULL;
+    semaphore_info.flags = 0;
+
+    if ((vr = vk_procs->vkCreateSemaphore(vk_device, &semaphore_info, NULL, &semaphores->acquire)) < 0 ||
+            (vr = vk_procs->vkCreateSemaphore(vk_device, &semaphore_info, NULL, &semaphores->present)) < 0)
+    {
+        ERR("Failed to create swap chain semaphores, vr %d.\n", vr);
+        d3d12_swapchain_semaphores_destroy(swapchain, semaphores);
+        return hresult_from_vk_result(vr);
+    }
+
+    return S_OK;
+}
+
 static HRESULT d3d12_swapchain_prepare_command_buffers(struct d3d12_swapchain *swapchain,
         uint32_t queue_family_index)
 {
     const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
     VkDevice vk_device = d3d12_swapchain_device(swapchain)->vk_device;
     VkCommandBufferAllocateInfo allocate_info;
-    VkSemaphoreCreateInfo semaphore_info;
     VkCommandPoolCreateInfo pool_info;
     unsigned int i;
     VkResult vr;
+    HRESULT hr;
 
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.pNext = NULL;
@@ -1148,18 +1190,8 @@ static HRESULT d3d12_swapchain_prepare_command_buffers(struct d3d12_swapchain *s
 
     for (i = 0; i < swapchain->buffer_count; ++i)
     {
-        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        semaphore_info.pNext = NULL;
-        semaphore_info.flags = 0;
-
-        assert(swapchain->vk_semaphores[i] == VK_NULL_HANDLE);
-        if ((vr = vk_procs->vkCreateSemaphore(vk_device, &semaphore_info,
-                NULL, &swapchain->vk_semaphores[i])) < 0)
-        {
-            WARN("Failed to create semaphore, vr %d.\n", vr);
-            swapchain->vk_semaphores[i] = VK_NULL_HANDLE;
-            return hresult_from_vk_result(vr);
-        }
+        if ((hr = d3d12_swapchain_semaphores_create(swapchain, &swapchain->semaphores[i])))
+            return hr;
     }
 
     return S_OK;
@@ -1301,10 +1333,8 @@ static void d3d12_swapchain_destroy_buffers(struct d3d12_swapchain *swapchain, B
     if (swapchain->command_queue && swapchain->command_queue->device->vk_device)
     {
         for (i = 0; i < swapchain->buffer_count; ++i)
-        {
-            vk_procs->vkDestroySemaphore(swapchain->command_queue->device->vk_device, swapchain->vk_semaphores[i], NULL);
-            swapchain->vk_semaphores[i] = VK_NULL_HANDLE;
-        }
+            d3d12_swapchain_semaphores_destroy(swapchain, &swapchain->semaphores[i]);
+
         vk_procs->vkDestroyCommandPool(swapchain->command_queue->device->vk_device, swapchain->vk_cmd_pool, NULL);
         swapchain->vk_cmd_pool = VK_NULL_HANDLE;
     }
@@ -1678,6 +1708,7 @@ static HRESULT d3d12_swapchain_set_sync_interval(struct d3d12_swapchain *swapcha
 static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain, VkQueue vk_queue)
 {
     const struct vkd3d_vk_device_procs *vk_procs = d3d12_swapchain_procs(swapchain);
+    const struct d3d12_swapchain_semaphores *semaphores;
     VkCommandBuffer vk_cmd_buffer;
     VkPresentInfoKHR present_info;
     VkSubmitInfo submit_info;
@@ -1686,6 +1717,8 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
     /* Dummy present by doing nothing. */
     if (swapchain->vk_swapchain == VK_NULL_HANDLE)
         return VK_SUCCESS;
+
+    semaphores = &swapchain->semaphores[swapchain->current_buffer_index];
 
     if (swapchain->vk_image_index == INVALID_VK_IMAGE_INDEX)
     {
@@ -1724,7 +1757,7 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &vk_cmd_buffer;
     submit_info.signalSemaphoreCount = 1;
-    submit_info.pSignalSemaphores = &swapchain->vk_semaphores[swapchain->vk_image_index];
+    submit_info.pSignalSemaphores = &semaphores->present;
 
     if ((vr = vk_procs->vkQueueSubmit(vk_queue, 1, &submit_info, VK_NULL_HANDLE)) < 0)
     {
@@ -1733,7 +1766,7 @@ static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain,
     }
 
     present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &swapchain->vk_semaphores[swapchain->vk_image_index];
+    present_info.pWaitSemaphores = &semaphores->present;
 
     if ((vr = vk_procs->vkQueuePresentKHR(vk_queue, &present_info)) >= 0)
     {
