@@ -1914,6 +1914,9 @@ struct d3d12_command_queue
     uint64_t drain_count;
     uint64_t queue_drain_count;
 
+    VkSemaphore submission_timeline;
+    uint64_t submission_number;
+
     struct vkd3d_private_store private_store;
 
 #ifdef VKD3D_BUILD_STANDALONE_D3D12

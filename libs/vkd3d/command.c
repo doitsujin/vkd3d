@@ -8812,6 +8812,7 @@ static ULONG STDMETHODCALLTYPE d3d12_command_queue_Release(ID3D12CommandQueue *i
     if (!refcount)
     {
         struct d3d12_device *device = command_queue->device;
+        const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
 
         vkd3d_private_store_destroy(&command_queue->private_store);
 
@@ -8820,6 +8821,8 @@ static ULONG STDMETHODCALLTYPE d3d12_command_queue_Release(ID3D12CommandQueue *i
         pthread_join(command_queue->submission_thread, NULL);
         pthread_mutex_destroy(&command_queue->queue_lock);
         pthread_cond_destroy(&command_queue->queue_cond);
+
+        VK_CALL(vkDestroySemaphore(device->vk_device, command_queue->submission_timeline, NULL));
 
         vkd3d_free(command_queue->submissions);
         vkd3d_free(command_queue);
@@ -10306,6 +10309,7 @@ cleanup:
 static HRESULT d3d12_command_queue_init(struct d3d12_command_queue *queue,
         struct d3d12_device *device, const D3D12_COMMAND_QUEUE_DESC *desc)
 {
+    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     HRESULT hr;
     int rc;
 
@@ -10321,6 +10325,7 @@ static HRESULT d3d12_command_queue_init(struct d3d12_command_queue *queue,
     queue->submissions = NULL;
     queue->submissions_count = 0;
     queue->submissions_size = 0;
+    queue->submission_number = 0;
     queue->drain_count = 0;
     queue->queue_drain_count = 0;
 
@@ -10351,6 +10356,9 @@ static HRESULT d3d12_command_queue_init(struct d3d12_command_queue *queue,
         goto fail_swapchain_factory;
 #endif
 
+    if (FAILED(hr = vkd3d_create_timeline_semaphore(device, 0, &queue->submission_timeline)))
+        goto fail_timeline_semaphore;
+
     d3d12_device_add_ref(queue->device = device);
 
     if ((rc = pthread_create(&queue->submission_thread, NULL, d3d12_command_queue_submission_worker_main, queue)) < 0)
@@ -10362,7 +10370,9 @@ static HRESULT d3d12_command_queue_init(struct d3d12_command_queue *queue,
 
     return S_OK;
 
-fail_pthread_create:;
+fail_pthread_create:
+    VK_CALL(vkDestroySemaphore(device->vk_device, queue->submission_timeline, NULL));
+fail_timeline_semaphore:;
 #ifdef VKD3D_BUILD_STANDALONE_D3D12
 fail_swapchain_factory:
     vkd3d_private_store_destroy(&queue->private_store);
