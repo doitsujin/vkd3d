@@ -28,6 +28,8 @@
 static HRESULT d3d12_fence_signal(struct d3d12_fence *fence, uint64_t value);
 static void d3d12_command_queue_add_submission(struct d3d12_command_queue *queue,
         const struct d3d12_command_queue_submission *sub);
+static void d3d12_command_queue_add_submission_locked(struct d3d12_command_queue *queue,
+        const struct d3d12_command_queue_submission *sub);
 
 static HRESULT vkd3d_create_binary_semaphore(struct d3d12_device *device, VkSemaphore *vk_semaphore)
 {
@@ -9227,17 +9229,34 @@ static HRESULT STDMETHODCALLTYPE d3d12_command_queue_Signal(ID3D12CommandQueue *
         ID3D12Fence *fence_iface, UINT64 value)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
+    const struct vkd3d_vk_device_procs *vk_procs = &command_queue->device->vk_procs;
+    struct d3d12_fence *fence = unsafe_impl_from_ID3D12Fence(fence_iface);
     struct d3d12_command_queue_submission sub;
-    struct d3d12_fence *fence;
+    uint64_t completed_submissions;
+    VkResult vr;
 
     TRACE("iface %p, fence %p, value %#"PRIx64".\n", iface, fence_iface, value);
 
-    fence = unsafe_impl_from_ID3D12Fence(fence_iface);
+    pthread_mutex_lock(&command_queue->queue_lock);
 
-    sub.type = VKD3D_SUBMISSION_SIGNAL;
-    sub.signal.fence = fence;
-    sub.signal.value = value;
-    d3d12_command_queue_add_submission(command_queue, &sub);
+    vr = VK_CALL(vkGetSemaphoreCounterValueKHR(command_queue->device->vk_device,
+            command_queue->submission_timeline, &completed_submissions));
+
+    if (vr == VK_SUCCESS && completed_submissions == command_queue->submission_number)
+    {
+        /* All previously submitted commands have completed on the GPU, so we
+         * can signal from the CPU in order to avoid potential delays. */
+        d3d12_fence_signal_cpu_timeline_semaphore(fence, value);
+    }
+    else
+    {
+        sub.type = VKD3D_SUBMISSION_SIGNAL;
+        sub.signal.fence = fence;
+        sub.signal.value = value;
+        d3d12_command_queue_add_submission_locked(command_queue, &sub);
+    }
+
+    pthread_mutex_unlock(&command_queue->queue_lock);
     return S_OK;
 }
 
@@ -10205,6 +10224,8 @@ void d3d12_command_queue_submit_stop(struct d3d12_command_queue *queue)
 static void d3d12_command_queue_add_submission_locked(struct d3d12_command_queue *queue,
                                                       const struct d3d12_command_queue_submission *sub)
 {
+    struct d3d12_command_queue_submission *dst;
+
     bool signal_timeline = sub->type == VKD3D_SUBMISSION_WAIT ||
             sub->type == VKD3D_SUBMISSION_SIGNAL ||
             sub->type == VKD3D_SUBMISSION_EXECUTE ||
@@ -10212,8 +10233,9 @@ static void d3d12_command_queue_add_submission_locked(struct d3d12_command_queue
 
     vkd3d_array_reserve((void**)&queue->submissions, &queue->submissions_size,
                         queue->submissions_count + 1, sizeof(*queue->submissions));
-    queue->submissions[queue->submissions_count++] = *sub;
-    queue->submissions[queue->submissions_count++].number = signal_timeline ? ++queue->submission_number : 0ull;
+    dst = &queue->submissions[queue->submissions_count++];
+    *dst = *sub;
+    dst->number = signal_timeline ? ++queue->submission_number : 0ull;
     pthread_cond_signal(&queue->queue_cond);
 }
 
