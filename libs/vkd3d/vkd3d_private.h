@@ -1868,6 +1868,7 @@ struct d3d12_command_queue_submission_bind_sparse
 struct d3d12_command_queue_submission
 {
     enum vkd3d_submission_type type;
+    uint64_t number;
     union
     {
         struct d3d12_command_queue_submission_wait wait;
