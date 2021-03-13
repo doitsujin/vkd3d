@@ -1842,6 +1842,20 @@ static HRESULT d3d12_device_create_vkd3d_queues(struct d3d12_device *device,
             device->unique_queue_mask |= 1u << i;
     }
 
+    for (i = 0, k = 0; i < VKD3D_QUEUE_FAMILY_COUNT; i++)
+    {
+        struct vkd3d_queue_family_info *queue_family = device->queue_families[i];
+
+        static const char* queue_names[] =
+        {
+            "graphics", "compute", "transfer",
+            "sparse binding", "internal",
+        };
+
+        INFO("Mapping %s queue to Vulkan queue family %u (%u queues).\n",
+                queue_names[i], queue_family->vk_family_index, queue_family->queue_count);
+    }
+
     return S_OK;
 
 out_destroy_queues:
@@ -1901,7 +1915,7 @@ static HRESULT vkd3d_select_queues(const struct vkd3d_instance *vkd3d_instance,
      * to potentially access descriptors which reference freed memory. This is fine in D3D12, but we need
      * PARTIALLY_BOUND_BIT semantics to make that work well.
      * Just disabling async compute works around the issue as well. */
-    #define VKD3D_FORCE_SINGLE_QUEUE 1
+    #define VKD3D_FORCE_SINGLE_QUEUE 0
 
     if (info->family_index[VKD3D_QUEUE_FAMILY_COMPUTE] == VK_QUEUE_FAMILY_IGNORED)
         info->family_index[VKD3D_QUEUE_FAMILY_COMPUTE] = info->family_index[VKD3D_QUEUE_FAMILY_GRAPHICS];
@@ -1989,15 +2003,6 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
 
     if (FAILED(hr = vkd3d_select_queues(device->vkd3d_instance, physical_device, &device_queue_info)))
         return hr;
-
-    TRACE("Using queue family %u for direct command queues.\n",
-            device_queue_info.family_index[VKD3D_QUEUE_FAMILY_GRAPHICS]);
-    TRACE("Using queue family %u for compute command queues.\n",
-            device_queue_info.family_index[VKD3D_QUEUE_FAMILY_COMPUTE]);
-    TRACE("Using queue family %u for copy command queues.\n",
-            device_queue_info.family_index[VKD3D_QUEUE_FAMILY_TRANSFER]);
-    TRACE("Using queue family %u for sparse binding.\n",
-            device_queue_info.family_index[VKD3D_QUEUE_FAMILY_SPARSE_BINDING]);
 
     VK_CALL(vkGetPhysicalDeviceMemoryProperties(physical_device, &device->memory_properties));
 
