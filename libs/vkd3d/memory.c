@@ -1175,7 +1175,7 @@ static void vkd3d_memory_allocator_clear_allocation(struct vkd3d_memory_allocato
     {
         /* Probably faster than doing this on the GPU
          * and having to worry about synchronization */
-        memset(allocation->cpu_address, 0, allocation->resource.size);
+        vkd3d_clear_memory(allocation->cpu_address, allocation->resource.size);
     }
     else if (allocation->resource.vk_buffer)
     {

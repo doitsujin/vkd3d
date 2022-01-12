@@ -30,6 +30,8 @@
 
 #ifdef _MSC_VER
 #include <intrin.h>
+#else
+#include <x86intrin.h>
 #endif
 
 #ifndef ARRAY_SIZE
@@ -274,6 +276,44 @@ static inline size_t vkd3d_wcslen(const WCHAR *wstr)
 static inline void *void_ptr_offset(void *ptr, size_t offset)
 {
     return ((char*)ptr) + offset;
+}
+
+static inline void vkd3d_clear_memory(void *mem, size_t size)
+{
+    __m128i zero = _mm_setzero_si128();
+    __m128i *mem_aligned;
+    size_t i;
+
+    /* Ideally both the starting address and size should be aligned to
+     * 64 bytes, but we need to handle the case when they aren't. */
+    if (((uintptr_t)mem) & 0x3F)
+    {
+        size_t byte_count = min(size, 64 - (((uintptr_t)mem) & 0x3F));
+        memset(mem, 0, byte_count);
+        size -= byte_count;
+        mem += byte_count;
+    }
+
+    /* Fill 64 bytes at a time with write-combined stores */
+    mem_aligned = mem;
+
+    for (i = 0; i < size / 64; i++)
+    {
+        _mm_stream_si128(mem_aligned + 0, zero);
+        _mm_stream_si128(mem_aligned + 1, zero);
+        _mm_stream_si128(mem_aligned + 2, zero);
+        _mm_stream_si128(mem_aligned + 3, zero);
+        mem_aligned += 4;
+    }
+
+    _mm_sfence();
+
+    /* Deal with remaining bytes if we have to. */
+    if (size & 0x3F)
+    {
+        mem = mem_aligned;
+        memset(mem, 0, size & 0x3F);
+    }
 }
 
 #ifdef _MSC_VER
