@@ -295,3 +295,4 @@ decl_test(test_rayquery);
 decl_test(test_typed_srv_uav_cast);
 decl_test(test_typed_srv_cast_clear);
 decl_test(test_aliasing_barrier_edge_cases);
+decl_test(test_mesh_shader_create_pipeline);
