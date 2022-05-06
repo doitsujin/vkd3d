@@ -1938,24 +1938,9 @@ vkd3d_spirv_resource_type_table[] =
     {VKD3D_SHADER_RESOURCE_TEXTURE_2DMSARRAY, SpvDim2D,     1, 1, 3, 2},
     {VKD3D_SHADER_RESOURCE_TEXTURE_CUBEARRAY, SpvDimCube,   1, 0, 4, 0,
             SpvCapabilitySampledCubeArray, SpvCapabilityImageCubeArray},
-};
-
-static const struct vkd3d_spirv_resource_type *vkd3d_get_spirv_resource_type(
-        enum vkd3d_shader_resource_type resource_type)
-{
-    unsigned int i;
-
-    for (i = 0; i < ARRAY_SIZE(vkd3d_spirv_resource_type_table); ++i)
-    {
-        const struct vkd3d_spirv_resource_type* current = &vkd3d_spirv_resource_type_table[i];
-
-        if (current->resource_type == resource_type)
-            return current;
-    }
-
-    FIXME("Unhandled resource type %#x.\n", resource_type);
-    return NULL;
-}
+},
+vkd3d_spirv_resource_type_3d_uav =
+    {VKD3D_SHADER_RESOURCE_TEXTURE_3D,        SpvDim2D,     1, 0, 3, 3};
 
 struct vkd3d_symbol_register
 {
@@ -2449,6 +2434,27 @@ static bool vkd3d_dxbc_compiler_check_shader_visibility(const struct vkd3d_dxbc_
             ERR("Invalid shader visibility %#x.\n", visibility);
             return false;
     }
+}
+
+static const struct vkd3d_spirv_resource_type *vkd3d_compiler_get_spirv_resource_type(struct vkd3d_dxbc_compiler *compiler,
+        enum vkd3d_shader_resource_type resource_type, bool is_uav)
+{
+    unsigned int i;
+
+    if (is_uav && resource_type == VKD3D_SHADER_RESOURCE_TEXTURE_3D &&
+            (compiler->shader_interface.flags & VKD3D_SHADER_INTERFACE_3D_UAV_AS_2D_ARRAY))
+        return &vkd3d_spirv_resource_type_3d_uav;
+
+    for (i = 0; i < ARRAY_SIZE(vkd3d_spirv_resource_type_table); ++i)
+    {
+        const struct vkd3d_spirv_resource_type* current = &vkd3d_spirv_resource_type_table[i];
+
+        if (current->resource_type == resource_type)
+            return current;
+    }
+
+    FIXME("Unhandled resource type %#x.\n", resource_type);
+    return NULL;
 }
 
 static struct vkd3d_push_constant_buffer_binding *vkd3d_dxbc_compiler_find_push_constant_buffer(
@@ -5490,7 +5496,7 @@ static const struct vkd3d_shader_global_binding *vkd3d_dxbc_compiler_get_global_
     }
     else if (data_type == VKD3D_DATA_RESOURCE)
     {
-        const struct vkd3d_spirv_resource_type *type_info = vkd3d_get_spirv_resource_type(resource_type);
+        const struct vkd3d_spirv_resource_type *type_info = vkd3d_compiler_get_spirv_resource_type(compiler, resource_type, false);
         uint32_t sampled_type_id = vkd3d_spirv_get_type_id(builder, component_type, 1);
 
         type_id = vkd3d_spirv_get_op_type_image(builder, sampled_type_id, type_info->dim,
@@ -5551,7 +5557,7 @@ static const struct vkd3d_shader_global_binding *vkd3d_dxbc_compiler_get_global_
         }
         else
         {
-            const struct vkd3d_spirv_resource_type *type_info = vkd3d_get_spirv_resource_type(resource_type);
+            const struct vkd3d_spirv_resource_type *type_info = vkd3d_compiler_get_spirv_resource_type(compiler, resource_type, true);
             uint32_t sampled_type_id = vkd3d_spirv_get_type_id(builder, component_type, 1);
 
             type_id = vkd3d_spirv_get_op_type_image(builder, sampled_type_id, type_info->dim,
@@ -6571,7 +6577,8 @@ static const struct vkd3d_spirv_resource_type *vkd3d_dxbc_compiler_enable_resour
     struct vkd3d_spirv_builder *builder = &compiler->spirv_builder;
     const struct vkd3d_spirv_resource_type *resource_type_info;
 
-    if (!(resource_type_info = vkd3d_get_spirv_resource_type(resource_type)))
+    /* Special case in case sliced UAVs are supported */
+    if (!(resource_type_info = vkd3d_compiler_get_spirv_resource_type(compiler, resource_type, is_uav)))
         return NULL;
 
     if (resource_type_info->capability)

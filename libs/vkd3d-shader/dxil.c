@@ -663,6 +663,19 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
         }
     }
 
+    if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_3D_UAV_AS_2D_ARRAY)
+    {
+        const struct dxil_spv_option_uav_3d_as_2d_array helper =
+                { { DXIL_SPV_OPTION_UAV_3D_AS_2D_ARRAY },
+                  DXIL_SPV_TRUE };
+        if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
+        {
+            ERR("dxil-spirv does not support UAV_3D_AS_2D_ARRAY.\n");
+            ret = VKD3D_ERROR_NOT_IMPLEMENTED;
+            goto end;
+        }
+    }
+
 #ifdef VKD3D_ENABLE_DESCRIPTOR_QA
     if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_DESCRIPTOR_QA_BUFFER)
     {
