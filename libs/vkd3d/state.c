@@ -1529,6 +1529,9 @@ unsigned int d3d12_root_signature_get_shader_interface_flags(const struct d3d12_
     if (root_signature->device->bindless_state.flags & VKD3D_BINDLESS_CBV_AS_SSBO)
         flags |= VKD3D_SHADER_INTERFACE_BINDLESS_CBV_AS_STORAGE_BUFFER;
 
+    if (root_signature->device->device_info.image_2d_view_of_3d_features.image2DViewOf3D)
+        flags |= VKD3D_SHADER_INTERFACE_3D_UAV_AS_2D_ARRAY;
+
     if (vkd3d_descriptor_debug_active_qa_checks())
         flags |= VKD3D_SHADER_INTERFACE_DESCRIPTOR_QA_BUFFER;
 

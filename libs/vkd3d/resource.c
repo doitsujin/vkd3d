@@ -538,8 +538,15 @@ static HRESULT vkd3d_get_image_create_info(struct d3d12_device *device,
             && desc->Width == desc->Height && desc->DepthOrArraySize >= 6
             && desc->SampleDesc.Count == 1)
         image_info->flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+
     if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
-        image_info->flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT_KHR;
+    {
+        if (desc->Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
+            image_info->flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT_KHR;
+
+        if (desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
+            image_info->flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
+    }
 
     if (sparse_resource)
     {
@@ -4695,14 +4702,24 @@ static void vkd3d_create_texture_uav(vkd3d_cpu_descriptor_va_t desc_va,
                 key.u.texture.aspect_mask = vk_image_aspect_flags_from_d3d12(resource->format, desc->Texture2DArray.PlaneSlice);
                 break;
             case D3D12_UAV_DIMENSION_TEXTURE3D:
-                key.u.texture.view_type = VK_IMAGE_VIEW_TYPE_3D;
-                key.u.texture.miplevel_idx = desc->Texture3D.MipSlice;
-                if (desc->Texture3D.FirstWSlice ||
-                    ((desc->Texture3D.WSize != max(1u, (UINT)resource->desc.DepthOrArraySize >> desc->Texture3D.MipSlice)) &&
-                        (desc->Texture3D.WSize != UINT_MAX)))
+                if (device->device_info.image_2d_view_of_3d_features.image2DViewOf3D)
                 {
-                    FIXME("Unhandled depth view %u-%u.\n",
-                          desc->Texture3D.FirstWSlice, desc->Texture3D.WSize);
+                    key.u.texture.view_type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                    key.u.texture.miplevel_idx = desc->Texture3D.MipSlice;
+                    key.u.texture.layer_idx = desc->Texture3D.FirstWSlice;
+                    key.u.texture.layer_count = desc->Texture3D.WSize;
+                }
+                else
+                {
+                    key.u.texture.view_type = VK_IMAGE_VIEW_TYPE_3D;
+                    key.u.texture.miplevel_idx = desc->Texture3D.MipSlice;
+                    if (desc->Texture3D.FirstWSlice ||
+                        ((desc->Texture3D.WSize != max(1u, (UINT)resource->desc.DepthOrArraySize >> desc->Texture3D.MipSlice)) &&
+                            (desc->Texture3D.WSize != UINT_MAX)))
+                    {
+                        FIXME("Unhandled depth view %u-%u.\n",
+                              desc->Texture3D.FirstWSlice, desc->Texture3D.WSize);
+                    }
                 }
                 break;
             default:
