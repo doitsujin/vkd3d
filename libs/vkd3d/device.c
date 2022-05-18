@@ -112,6 +112,7 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_SHADER_IMAGE_ATOMIC_INT64, EXT_shader_image_atomic_int64),
     VK_EXTENSION(EXT_SCALAR_BLOCK_LAYOUT, EXT_scalar_block_layout),
     VK_EXTENSION(EXT_PIPELINE_CREATION_FEEDBACK, EXT_pipeline_creation_feedback),
+    VK_EXTENSION(EXT_IMAGE_2D_VIEW_OF_3D, EXT_image_2d_view_of_3d),
     /* AMD extensions */
     VK_EXTENSION(AMD_BUFFER_MARKER, AMD_buffer_marker),
     VK_EXTENSION(AMD_DEVICE_COHERENT_MEMORY, AMD_device_coherent_memory),
@@ -1427,6 +1428,13 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
         vk_prepend_struct(&info->features2, &info->scalar_block_layout_features);
     }
 
+    if (vulkan_info->EXT_image_2d_view_of_3d)
+    {
+        info->image_2d_view_of_3d_features.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT;
+        vk_prepend_struct(&info->features2, &info->image_2d_view_of_3d_features);
+    }
+
     if (vulkan_info->KHR_uniform_buffer_standard_layout)
     {
         info->uniform_buffer_standard_layout_features.sType =
@@ -1868,6 +1876,10 @@ static void vkd3d_trace_physical_device_features(const struct vkd3d_physical_dev
     TRACE("  VkPhysicalDeviceCustomBorderColorFeaturesEXT:\n");
     TRACE("    customBorderColors: %#x\n", info->custom_border_color_features.customBorderColors);
     TRACE("    customBorderColorWithoutFormat: %#x\n", info->custom_border_color_features.customBorderColorWithoutFormat);
+
+    TRACE("  VkPhysicalDeviceImage2DViewOf3DFeaturesEXT:\n");
+    TRACE("    image2DViewOf3D: %#x\n", info->image_2d_view_of_3d_features.image2DViewOf3D);
+    TRACE("    sampler2DViewOf3D: %#x\n", info->image_2d_view_of_3d_features.sampler2DViewOf3D);
 }
 
 static HRESULT vkd3d_init_device_extensions(struct d3d12_device *device,

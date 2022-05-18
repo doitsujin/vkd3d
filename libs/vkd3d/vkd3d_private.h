@@ -159,6 +159,7 @@ struct vkd3d_vulkan_info
     bool EXT_shader_image_atomic_int64;
     bool EXT_scalar_block_layout;
     bool EXT_pipeline_creation_feedback;
+    bool EXT_image_2d_view_of_3d;
     /* AMD device extensions */
     bool AMD_buffer_marker;
     bool AMD_device_coherent_memory;
@@ -3075,6 +3076,7 @@ struct vkd3d_physical_device_info
     VkPhysicalDeviceCoherentMemoryFeaturesAMD device_coherent_memory_features_amd;
     VkPhysicalDeviceMaintenance4FeaturesKHR maintenance4_features;
     VkPhysicalDeviceRayTracingMaintenance1FeaturesKHR ray_tracing_maintenance1_features;
+    VkPhysicalDeviceImage2DViewOf3DFeaturesEXT image_2d_view_of_3d_features;
 
     VkPhysicalDeviceFeatures2 features2;
 
