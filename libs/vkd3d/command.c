@@ -8327,6 +8327,7 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     VkExtent3D workgroup_size;
     VkMemoryBarrier barrier;
     uint32_t element_count;
+    bool texture_is_3d;
 
     d3d12_command_list_track_resource_usage(list, resource, true);
     d3d12_command_list_end_current_render_pass(list, false);
@@ -8337,6 +8338,7 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     assert(args->has_view);
     assert(d3d12_resource_is_texture(resource));
 
+    texture_is_3d = resource->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
     miplevel_idx = args->u.view->info.texture.miplevel_idx;
 
     full_rect.left = 0;
@@ -8363,7 +8365,11 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
         element_count = full_rect.right * full_rect.bottom;
     }
 
-    element_count *= d3d12_resource_desc_get_depth(&resource->desc, miplevel_idx);
+    if (args->u.view->info.texture.vk_view_type == VK_IMAGE_VIEW_TYPE_3D)
+        element_count *= d3d12_resource_desc_get_depth(&resource->desc, miplevel_idx);
+    else if (texture_is_3d)
+        element_count *= args->u.view->info.texture.layer_count;
+
     scratch_buffer_size = element_count * format->byte_count;
 
     if (!d3d12_command_allocator_allocate_scratch_memory(list->allocator,
@@ -8445,6 +8451,21 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     copy_region.imageOffset.z = 0;
     copy_region.imageExtent.depth = d3d12_resource_desc_get_depth(&resource->desc, miplevel_idx);
     copy_region.imageSubresource = vk_subresource_layers_from_view(args->u.view);
+
+    /* We need the actual image subresources here even
+     * if the view is a 2D array view of a 3D image */
+    if (texture_is_3d)
+    {
+        copy_region.imageSubresource.baseArrayLayer = 0;
+        copy_region.imageSubresource.layerCount = 1;
+
+        if (args->u.view->info.texture.vk_view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY)
+        {
+            copy_region.imageOffset.z = args->u.view->info.texture.layer_idx;
+            copy_region.imageExtent.depth = args->u.view->info.texture.layer_count;
+        }
+    }
+
     base_layer = copy_region.imageSubresource.baseArrayLayer;
     layer_count = copy_region.imageSubresource.layerCount;
 
