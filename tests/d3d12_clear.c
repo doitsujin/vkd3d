@@ -733,8 +733,7 @@ void test_clear_unordered_access_view_image(void)
     {
         {D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_UAV_DIMENSION_TEXTURE2D,      false},
         {D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_UAV_DIMENSION_TEXTURE2DARRAY, true },
-        /* Expected behaviour with partial layer coverage is unclear. */
-        {D3D12_RESOURCE_DIMENSION_TEXTURE3D, D3D12_UAV_DIMENSION_TEXTURE3D,      false},
+        {D3D12_RESOURCE_DIMENSION_TEXTURE3D, D3D12_UAV_DIMENSION_TEXTURE3D,      true },
     };
 
     memset(&desc, 0, sizeof(desc));
