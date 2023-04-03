@@ -2927,7 +2927,7 @@ static void d3d12_command_list_decay_optimal_dsv_resource(struct d3d12_command_l
     barrier.dstStageMask = current_layout_is_shader_visible ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
             : (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT);
     barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-            (current_layout_is_shader_visible ? VK_ACCESS_2_SHADER_READ_BIT : 0);
+            (current_layout_is_shader_visible ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0);
     barrier.subresourceRange.aspectMask = resource->format->vk_aspect_mask;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -3482,7 +3482,7 @@ static void d3d12_command_list_discard_attachment_barrier(struct d3d12_command_l
     else if (resource->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
     {
         stages = vk_queue_shader_stages(list->vk_queue_flags);
-        access = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+        access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
         layout = VK_IMAGE_LAYOUT_GENERAL;
     }
     else
@@ -3570,7 +3570,7 @@ static bool vk_render_pass_barrier_from_view(struct d3d12_command_list *list,
         if (d3d12_resource_requires_shader_visibility_after_transition(resource,
                 vk_barrier->oldLayout, vk_barrier->newLayout))
         {
-            vk_barrier->dstAccessMask |= VK_ACCESS_2_SHADER_READ_BIT;
+            vk_barrier->dstAccessMask |= VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
             stages = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
         }
     }
@@ -3593,7 +3593,7 @@ static bool vk_render_pass_barrier_from_view(struct d3d12_command_list *list,
             if (vk_barrier->newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
             {
                 vk_barrier->dstAccessMask =
-                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
                 /* We don't know if we have DEPTH_READ | NON_PIXEL_RESOURCE or DEPTH_READ | PIXEL_RESOURCE. */
                 stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             }
@@ -4238,7 +4238,7 @@ static bool d3d12_command_list_gather_pending_queries(struct d3d12_command_list 
     vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     vk_barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
 
     memset(&dep_info, 0, sizeof(dep_info));
     dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -4278,9 +4278,9 @@ static bool d3d12_command_list_gather_pending_queries(struct d3d12_command_list 
     }
 
     vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT;
-    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
 
     VK_CALL(vkCmdPipelineBarrier2(list->vk_command_buffer, &dep_info));
 
@@ -4417,7 +4417,7 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
                 *access |= VK_ACCESS_2_UNIFORM_READ_BIT;
 
                 if (device->bindless_state.flags & (VKD3D_BINDLESS_CBV_AS_SSBO | VKD3D_RAW_VA_ROOT_DESCRIPTOR_CBV))
-                    *access |= VK_ACCESS_2_SHADER_READ_BIT;
+                    *access |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
 
                 if (vk_queue_flags & VK_QUEUE_GRAPHICS_BIT)
                 {
@@ -4444,7 +4444,7 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
 
             case D3D12_RESOURCE_STATE_UNORDERED_ACCESS:
                 *stages |= queue_shader_stages;
-                *access |= VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+                *access |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
                 if ((vk_queue_flags & VK_QUEUE_COMPUTE_BIT) &&
                         d3d12_device_supports_ray_tracing_tier_1_0(device))
                 {
@@ -4484,19 +4484,30 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
 
             case D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE:
                 *stages |= queue_shader_stages & ~VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-                *access |= VK_ACCESS_2_SHADER_READ_BIT;
-                if ((vk_queue_flags & VK_QUEUE_COMPUTE_BIT) &&
-                        d3d12_device_supports_ray_tracing_tier_1_0(device))
+
+                if (d3d12_resource_is_buffer(resource))
                 {
                     /* Vertex / index / transform buffer inputs are NON_PIXEL_SHADER_RESOURCES in DXR.
-                     * They access SHADER_READ_BIT in Vulkan, so just need to add the stage. */
-                    *stages |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+                     * Vulkan spec only mentions SHADER_READ_BIT, so just use that here and add the
+                     * stage for RTAS builds. This also accounts for SBT reads. */
+                    *access |= VK_ACCESS_2_SHADER_READ_BIT;
+
+                    if ((vk_queue_flags & VK_QUEUE_COMPUTE_BIT) &&
+                            d3d12_device_supports_ray_tracing_tier_1_0(device))
+                    {
+                        *stages |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+                    }
                 }
+                else
+                    *access |= VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
                 break;
 
             case D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE:
                 *stages |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-                *access |= VK_ACCESS_2_SHADER_READ_BIT;
+                *access |= VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+
+                if (d3d12_resource_is_buffer(resource))
+                    *access |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
                 break;
 
             case D3D12_RESOURCE_STATE_STREAM_OUT:
@@ -4511,7 +4522,7 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
 
                 /* D3D12_RESOURCE_STATE_PREDICATION */
                 *stages |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                *access |= VK_ACCESS_2_SHADER_READ_BIT;
+                *access |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
                 break;
 
             case D3D12_RESOURCE_STATE_COPY_DEST:
@@ -4811,7 +4822,7 @@ static HRESULT d3d12_command_list_build_init_commands(struct d3d12_command_list 
         memset(&barrier, 0, sizeof(barrier));
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 
@@ -6266,7 +6277,7 @@ static bool d3d12_command_list_emit_multi_dispatch_indirect_count(struct d3d12_c
     vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
     vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
 
     memset(&dep_info, 0, sizeof(dep_info));
     dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -6311,7 +6322,7 @@ static bool d3d12_command_list_emit_multi_dispatch_indirect_count(struct d3d12_c
     if (vk_patch_cmd_buffer == list->vk_command_buffer)
     {
         vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         vk_barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 
@@ -6382,7 +6393,7 @@ static bool d3d12_command_list_emit_multi_dispatch_indirect_count_state(struct d
     vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
     vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
 
     if (!list->execute_indirect.has_observed_transition_to_indirect)
     {
@@ -6415,7 +6426,7 @@ static bool d3d12_command_list_emit_multi_dispatch_indirect_count_state(struct d
     if (vk_patch_cmd_buffer == list->vk_command_buffer)
     {
         vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         vk_barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
 
@@ -6463,7 +6474,7 @@ static bool d3d12_command_list_emit_predicated_command(struct d3d12_command_list
     memset(&vk_barrier, 0, sizeof(vk_barrier));
     vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
     vk_barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 
@@ -6896,7 +6907,7 @@ static void d3d12_command_list_copy_image(struct d3d12_command_list *list,
     {
         src_layout = d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         src_stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        src_access = VK_ACCESS_2_SHADER_READ_BIT;
+        src_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 
         if (dst_is_depth_stencil)
         {
@@ -10089,7 +10100,7 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     memset(&barrier, 0, sizeof(barrier));
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     barrier.srcStageMask = vk_queue_shader_stages(list->vk_queue_flags);
-    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
 
@@ -10167,7 +10178,7 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     barrier.dstStageMask = vk_queue_shader_stages(list->vk_queue_flags);
-    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 
     VK_CALL(vkCmdPipelineBarrier2(list->vk_command_buffer, &dep_info));
 
@@ -11001,7 +11012,7 @@ static void d3d12_command_list_resolve_binary_occlusion_queries(struct d3d12_com
     vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     vk_barrier.srcAccessMask = list->tracked_copy_buffer_count ? VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_NONE;
     vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 
     d3d12_command_list_reset_buffer_copy_tracking(list);
 
@@ -11023,7 +11034,7 @@ static void d3d12_command_list_resolve_binary_occlusion_queries(struct d3d12_com
     VK_CALL(vkCmdDispatch(list->vk_command_buffer, workgroup_count, 1, 1));
 
     vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     vk_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
 
@@ -11145,7 +11156,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPredication(d3d12_command_li
         memset(&vk_barrier, 0, sizeof(vk_barrier));
         vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
         vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        vk_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 
         if (list->device->device_info.conditional_rendering_features.conditionalRendering)
         {
@@ -11156,7 +11167,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPredication(d3d12_command_li
         else
         {
             vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
             list->predicate_va = scratch.va;
         }
 
@@ -11579,7 +11590,7 @@ static void d3d12_command_list_execute_indirect_state_template_graphics(
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
 
         if (!list->execute_indirect.has_observed_transition_to_indirect)
         {
@@ -11613,7 +11624,7 @@ static void d3d12_command_list_execute_indirect_state_template_graphics(
         if (vk_patch_cmd_buffer == list->vk_command_buffer)
         {
             barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
             barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 
