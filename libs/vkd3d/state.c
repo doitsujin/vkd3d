@@ -4289,7 +4289,11 @@ static HRESULT d3d12_pipeline_state_init_graphics_create_info(struct d3d12_pipel
         }
     }
 
-    if (graphics->ds_desc.depthTestEnable || graphics->ds_desc.stencilTestEnable || graphics->ds_desc.depthBoundsTestEnable)
+    /* Need to take depth bias into account and actually bind the DSV in order to get
+     * proper scaling. This is relevant if the fragment shader reads SV_POSITION.z. */
+    if (graphics->ds_desc.depthTestEnable || graphics->ds_desc.stencilTestEnable || graphics->ds_desc.depthBoundsTestEnable ||
+            desc->rasterizer_state.DepthBias != 0.0f || desc->rasterizer_state.SlopeScaledDepthBias ||
+            (desc->flags & D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS))
     {
         if (desc->dsv_format == DXGI_FORMAT_UNKNOWN)
         {
