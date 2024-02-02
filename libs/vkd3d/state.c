@@ -2615,6 +2615,18 @@ static HRESULT vkd3d_compile_shader_stage(struct d3d12_pipeline_state *state, st
         }
     }
 
+    /* HACK HACK HACK HACK HACK */
+    for (uint32_t i = 5; i < spirv_code->size / 4u; )
+    {
+        uint32_t *code_dwords = spirv_code->code;
+
+        /* replace OpUndef with OpConstantNull */
+        if (code_dwords[i] == 0x30001)
+            code_dwords[i] = 0x3002e;
+
+        i += code_dwords[i] >> 16;
+    }
+
     /* Debug compare SPIR-V we got from cache, and SPIR-V we got from compilation. */
     if (recovered_hash)
     {
