@@ -197,15 +197,19 @@ void test_clear_render_target_view(void)
     }
     r16g16b16a16[] =
     {
-        {green,          DXGI_FORMAT_R16G16B16A16_UNORM, 0xffff0000ffff0000},
+        {green,          DXGI_FORMAT_R16_UNORM, 0xffff0000ffff0000},
 
-        {green,          DXGI_FORMAT_R16G16B16A16_UINT,  0x0001000000010000},
-        {color,          DXGI_FORMAT_R16G16B16A16_UINT,  0x0000000000000000},
-        {negative_value, DXGI_FORMAT_R16G16B16A16_UINT,  0x0000000000000001},
+        {green,          DXGI_FORMAT_R16_UINT,  0x0001000000010000},
+        {color,          DXGI_FORMAT_R16_UINT,  0x0000000000000000},
+        {negative_value, DXGI_FORMAT_R16_UINT,  0x0000000000000001},
 
-        {green,          DXGI_FORMAT_R16G16B16A16_SINT,  0x0001000000010000},
-        {color,          DXGI_FORMAT_R16G16B16A16_SINT,  0x0000000000000000},
-        {negative_value, DXGI_FORMAT_R16G16B16A16_SINT,  0xfffe0000ffff0001},
+        {green,          DXGI_FORMAT_R16_SINT,  0x0001000000010000},
+        {color,          DXGI_FORMAT_R16_SINT,  0x0000000000000000},
+        {negative_value, DXGI_FORMAT_R16_SINT,  0xfffe0000ffff0001},
+
+        {green,          DXGI_FORMAT_R16_FLOAT, 0x3c0000003c000000},
+        {color,          DXGI_FORMAT_R16_FLOAT, 0x3a0034cc38002e66},
+        {negative_value, DXGI_FORMAT_R16_FLOAT, 0xc000b800bc003c00},
     };
 
     STATIC_ASSERT(ARRAY_SIZE(array_colors) == ARRAY_SIZE(array_expected_colors));
@@ -272,12 +276,12 @@ void test_clear_render_target_view(void)
     }
     vkd3d_test_set_context(NULL);
 
-    /* R16G16B16A16 */
+    /* R16 */
     hr = ID3D12GraphicsCommandList_Close(command_list);
     ok(hr == S_OK, "Failed to close command list, hr %#x.\n", hr);
     reset_command_list(command_list, context.allocator);
     ID3D12Resource_Release(resource);
-    resource_desc.Format = DXGI_FORMAT_R16G16B16A16_TYPELESS;
+    resource_desc.Format = DXGI_FORMAT_R16_TYPELESS;
     hr = ID3D12Device_CreateCommittedResource(device,
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
@@ -294,7 +298,7 @@ void test_clear_render_target_view(void)
         ID3D12GraphicsCommandList_ClearRenderTargetView(command_list, rtv_handle, r16g16b16a16[i].color, 0, NULL);
         transition_resource_state(command_list, resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        check_sub_resource_uint64(resource, 0, queue, command_list, r16g16b16a16[i].result, 0);
+        check_sub_resource_uint16(resource, 0, queue, command_list, r16g16b16a16[i].result & 0xffff, 0);
 
         reset_command_list(command_list, context.allocator);
         transition_resource_state(command_list, resource,
