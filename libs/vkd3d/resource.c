@@ -4769,6 +4769,7 @@ bool vkd3d_create_texture_view(struct d3d12_device *device, const struct vkd3d_t
     object->vk_image_view = vk_view;
     object->format = format;
     object->info.texture.vk_view_type = desc->view_type;
+    object->info.texture.aspect_mask = desc->aspect_mask;
     object->info.texture.miplevel_idx = desc->miplevel_idx;
     object->info.texture.layer_idx = desc->layer_idx;
     object->info.texture.layer_count = desc->layer_count;
