@@ -3048,6 +3048,9 @@ struct vkd3d_queue
     uint32_t timestamp_bits;
     uint32_t virtual_queue_count;
 
+    int32_t max_virtual_priority;
+    uint64_t max_priority_submission_time;
+
     VkSemaphoreSubmitInfo *wait_semaphores;
     size_t wait_semaphores_size;
     uint64_t *wait_values_virtual;
@@ -4894,8 +4897,9 @@ HRESULT d3d12_device_create(struct vkd3d_instance *instance,
 struct vkd3d_queue_family_info *d3d12_device_get_vkd3d_queue_family(struct d3d12_device *device,
         D3D12_COMMAND_LIST_TYPE type,
         uint32_t vk_family_index);
-struct vkd3d_queue *d3d12_device_allocate_vkd3d_queue(struct vkd3d_queue_family_info *queue_family);
-void d3d12_device_unmap_vkd3d_queue(struct vkd3d_queue *queue);
+struct vkd3d_queue *d3d12_device_allocate_vkd3d_queue(struct vkd3d_queue_family_info *queue_family,
+        int32_t queue_priority);
+void d3d12_device_unmap_vkd3d_queue(struct vkd3d_queue *queue, int32_t queue_priority);
 bool d3d12_device_is_uma(struct d3d12_device *device, bool *coherent);
 void d3d12_device_mark_as_removed(struct d3d12_device *device, HRESULT reason,
         const char *message, ...) VKD3D_PRINTF_FUNC(3, 4);
