@@ -445,7 +445,7 @@ static void dxgi_vk_swap_chain_cleanup_surface(struct dxgi_vk_swap_chain *chain)
     pthread_mutex_destroy(&chain->properties.lock);
 
     if (chain->async_queue)
-        d3d12_device_unmap_vkd3d_queue(chain->queue->device, chain->async_queue);
+        d3d12_device_unmap_vkd3d_queue(chain->async_queue, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL);
 }
 
 static void dxgi_vk_swap_chain_cleanup_sync_objects(struct dxgi_vk_swap_chain *chain)
@@ -1359,7 +1359,7 @@ static HRESULT dxgi_vk_swap_chain_create_surface(struct dxgi_vk_swap_chain *chai
          * That would just be extremely weird, and all relevant drivers support this anyway. */
         VK_CALL(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk_physical_device, chain->vk_surface, &caps));
         if ((caps.supportedUsageFlags & required_usage) == required_usage)
-            chain->async_queue = d3d12_device_allocate_vkd3d_queue(chain->queue->device, family_info);
+            chain->async_queue = d3d12_device_allocate_vkd3d_queue(family_info, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL);
 
         if (chain->async_queue)
             INFO("Using async compute presentation.\n");

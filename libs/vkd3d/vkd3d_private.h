@@ -3232,6 +3232,9 @@ struct d3d12_command_queue
     uint64_t drain_count;
     uint64_t queue_drain_count;
 
+    uint64_t last_submission_timeline_value;
+    bool stagger_submissions;
+
     struct vkd3d_fence_worker fence_worker;
     struct vkd3d_private_store private_store;
     struct dxgi_vk_swap_chain_factory vk_swap_chain_factory;
