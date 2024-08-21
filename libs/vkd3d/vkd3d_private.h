@@ -4547,7 +4547,7 @@ struct vkd3d_device_swapchain_info
     bool mode;
     bool boost;
     uint32_t minimum_us;
-    spinlock_t low_latency_swapchain_spinlock;
+    spinlock_t spinlock;
 
     VkSemaphore implicit_sync_timeline[VKD3D_IMPLICIT_SYNC_NUM_TIMELINES];
     uint64_t implicit_sync_timeline_values[VKD3D_IMPLICIT_SYNC_NUM_TIMELINES];
@@ -5111,7 +5111,7 @@ bool d3d12_device_supports_required_subgroup_size_for_stage(
 
 static inline void d3d12_device_register_swapchain(struct d3d12_device *device, struct dxgi_vk_swap_chain *chain)
 {
-    spinlock_acquire(&device->swapchain_info.low_latency_swapchain_spinlock);
+    spinlock_acquire(&device->swapchain_info.spinlock);
 
     if (!device->swapchain_info.low_latency_swapchain && device->swapchain_info.swapchain_count == 0)
     {
@@ -5128,12 +5128,12 @@ static inline void d3d12_device_register_swapchain(struct d3d12_device *device, 
 
     device->swapchain_info.swapchain_count++;
 
-    spinlock_release(&device->swapchain_info.low_latency_swapchain_spinlock);
+    spinlock_release(&device->swapchain_info.spinlock);
 }
 
 static inline void d3d12_device_remove_swapchain(struct d3d12_device *device, struct dxgi_vk_swap_chain *chain)
 {
-    spinlock_acquire(&device->swapchain_info.low_latency_swapchain_spinlock);
+    spinlock_acquire(&device->swapchain_info.spinlock);
 
     if (device->swapchain_info.low_latency_swapchain == chain)
     {
@@ -5143,7 +5143,7 @@ static inline void d3d12_device_remove_swapchain(struct d3d12_device *device, st
 
     device->swapchain_info.swapchain_count--;
 
-    spinlock_release(&device->swapchain_info.low_latency_swapchain_spinlock);
+    spinlock_release(&device->swapchain_info.spinlock);
 }
 
 /* ID3DBlob */
