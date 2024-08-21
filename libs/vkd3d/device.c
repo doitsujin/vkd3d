@@ -79,6 +79,7 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(KHR_MAINTENANCE_6, KHR_maintenance6),
     VK_EXTENSION(KHR_SHADER_MAXIMAL_RECONVERGENCE, KHR_shader_maximal_reconvergence),
     VK_EXTENSION(KHR_SHADER_QUAD_CONTROL, KHR_shader_quad_control),
+    VK_EXTENSION(KHR_GLOBAL_PRIORITY, KHR_global_priority),
 #ifdef _WIN32
     VK_EXTENSION(KHR_EXTERNAL_MEMORY_WIN32, KHR_external_memory_win32),
     VK_EXTENSION(KHR_EXTERNAL_SEMAPHORE_WIN32, KHR_external_semaphore_win32),
@@ -1936,6 +1937,12 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
         vk_prepend_struct(&info->properties2, &info->image_alignment_control_properties);
     }
 
+    if (vulkan_info->KHR_global_priority)
+    {
+        info->global_priority_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GLOBAL_PRIORITY_QUERY_FEATURES_KHR;
+        vk_prepend_struct(&info->features2, &info->global_priority_query_features);
+    }
+
     VK_CALL(vkGetPhysicalDeviceFeatures2(device->vk_physical_device, &info->features2));
     VK_CALL(vkGetPhysicalDeviceProperties2(device->vk_physical_device, &info->properties2));
 }
@@ -2684,6 +2691,7 @@ struct vkd3d_device_queue_info
 
     unsigned int vk_family_count;
     VkDeviceQueueCreateInfo vk_queue_create_info[VKD3D_QUEUE_FAMILY_COUNT];
+    VkDeviceQueueGlobalPriorityCreateInfoKHR vk_global_prio_info;
 };
 
 static bool vkd3d_queue_family_needs_out_of_band_queue(unsigned int vkd3d_queue_family)
@@ -2891,6 +2899,16 @@ static HRESULT vkd3d_select_queues(const struct d3d12_device *device,
         queue_info->queueFamilyIndex = info->family_index[i];
         queue_info->queueCount = min(info->vk_properties[i].queueCount, VKD3D_MAX_QUEUE_COUNT_PER_FAMILY);
         queue_info->pQueuePriorities = queue_priorities;
+
+        if (i == VKD3D_QUEUE_FAMILY_GRAPHICS && queue_info->queueCount == 1 &&
+                device->device_info.global_priority_query_features.globalPriorityQuery)
+        {
+            /* Anything above MEDIUM may fail due to lack of permissions, but LOW should always work. */
+            info->vk_global_prio_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR;
+            info->vk_global_prio_info.pNext = NULL;
+            info->vk_global_prio_info.globalPriority = VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR;
+            vk_prepend_struct(queue_info, &info->vk_global_prio_info);
+        }
 
         if (single_queue)
             queue_info->queueCount = 1;

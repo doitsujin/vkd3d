@@ -129,6 +129,7 @@ struct vkd3d_vulkan_info
     bool KHR_maintenance6;
     bool KHR_shader_maximal_reconvergence;
     bool KHR_shader_quad_control;
+    bool KHR_global_priority;
     /* EXT device extensions */
     bool EXT_calibrated_timestamps;
     bool EXT_conditional_rendering;
@@ -4468,6 +4469,7 @@ struct vkd3d_physical_device_info
     VkPhysicalDeviceImageAlignmentControlFeaturesMESA image_alignment_control_features;
     VkPhysicalDeviceImageAlignmentControlPropertiesMESA image_alignment_control_properties;
     VkPhysicalDeviceDepthBiasControlFeaturesEXT depth_bias_control_features;
+    VkPhysicalDeviceGlobalPriorityQueryFeaturesKHR global_priority_query_features;
 
     VkPhysicalDeviceFeatures2 features2;
 
