@@ -140,8 +140,10 @@ struct dxgi_vk_swap_chain
 
         /* For blits. Use simple VkFences since we have to use binary semaphores with WSI release anyways.
          * We don't need to wait on these fences on main thread. */
-        VkCommandPool vk_blit_command_pool;
-        VkCommandBuffer vk_blit_command_buffers[DXGI_MAX_SWAP_CHAIN_BUFFERS];
+        VkCommandPool vk_graphics_blit_command_pool;
+        VkCommandBuffer vk_graphics_blit_command_buffers[DXGI_MAX_SWAP_CHAIN_BUFFERS];
+        VkCommandPool vk_compute_blit_command_pool;
+        VkCommandBuffer vk_compute_blit_command_buffers[DXGI_MAX_SWAP_CHAIN_BUFFERS];
         uint64_t backbuffer_blit_timelines[DXGI_MAX_SWAP_CHAIN_BUFFERS];
 
         VkSwapchainKHR vk_swapchain;
@@ -388,6 +390,7 @@ static void dxgi_vk_swap_chain_drain_queue(struct dxgi_vk_swap_chain *chain)
 
     /* Wait for pending blits to complete on the GPU */
     dxgi_vk_swap_chain_drain_complete_semaphore(chain, chain->user.present_count);
+    dxgi_vk_swap_chain_drain_internal_blit_semaphore(chain, chain->present.internal_blit_count);
 
     if (chain->swapchain_maintenance1)
         dxgi_vk_swap_chain_drain_swapchain_fences(chain);
@@ -465,7 +468,8 @@ static void dxgi_vk_swap_chain_cleanup_common(struct dxgi_vk_swap_chain *chain)
 
     VK_CALL(vkDestroySemaphore(chain->queue->device->vk_device, chain->present.vk_internal_blit_semaphore, NULL));
     VK_CALL(vkDestroySemaphore(chain->queue->device->vk_device, chain->present.vk_complete_semaphore, NULL));
-    VK_CALL(vkDestroyCommandPool(chain->queue->device->vk_device, chain->present.vk_blit_command_pool, NULL));
+    VK_CALL(vkDestroyCommandPool(chain->queue->device->vk_device, chain->present.vk_graphics_blit_command_pool, NULL));
+    VK_CALL(vkDestroyCommandPool(chain->queue->device->vk_device, chain->present.vk_compute_blit_command_pool, NULL));
     for (i = 0; i < ARRAY_SIZE(chain->present.vk_release_semaphores); i++)
         VK_CALL(vkDestroySemaphore(chain->queue->device->vk_device, chain->present.vk_release_semaphores[i], NULL));
     for (i = 0; i < ARRAY_SIZE(chain->present.vk_backbuffer_image_views); i++)
@@ -1961,13 +1965,22 @@ static void dxgi_vk_swap_chain_recreate_swapchain_in_present_task(struct dxgi_vk
     chain->present.backbuffer_format = swapchain_create_info.imageFormat;
     chain->present.current_backbuffer_index = UINT32_MAX;
 
-    if (!chain->present.vk_blit_command_pool)
+    if (!chain->present.vk_graphics_blit_command_pool)
     {
         command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         command_pool_create_info.pNext = NULL;
         command_pool_create_info.queueFamilyIndex = chain->queue->vkd3d_queue->vk_family_index;
         command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        VK_CALL(vkCreateCommandPool(vk_device, &command_pool_create_info, NULL, &chain->present.vk_blit_command_pool));
+        VK_CALL(vkCreateCommandPool(vk_device, &command_pool_create_info, NULL, &chain->present.vk_graphics_blit_command_pool));
+    }
+
+    if (!chain->present.vk_compute_blit_command_pool && chain->async_queue)
+    {
+        command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        command_pool_create_info.pNext = NULL;
+        command_pool_create_info.queueFamilyIndex = chain->async_queue->vk_family_index;
+        command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        VK_CALL(vkCreateCommandPool(vk_device, &command_pool_create_info, NULL, &chain->present.vk_compute_blit_command_pool));
     }
 
     dxgi_vk_swap_chain_init_blit_pipeline(chain);
@@ -2029,6 +2042,114 @@ static void dxgi_vk_swap_chain_present_signal_blit_semaphore(struct dxgi_vk_swap
         ERR("Failed to submit present discard, vr = %d.\n", vr);
         VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(chain->queue->device, vr == VK_ERROR_DEVICE_LOST);
     }
+}
+
+static void dxgi_vk_swap_chain_record_compute_blit(struct dxgi_vk_swap_chain *chain, VkCommandBuffer vk_cmd, uint32_t swapchain_index)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &chain->queue->device->vk_procs;
+    VkImageMemoryBarrier2 image_barrier[2];
+    struct d3d12_resource *resource;
+    VkDependencyInfo dep_info;
+    bool blank_present;
+
+    /* TODO: compute blit in fallback scenarios. */
+    resource = chain->user.backbuffers[chain->request.user_index];
+    blank_present = vkd3d_atomic_uint32_load_explicit(&resource->initial_layout_transition, vkd3d_memory_order_relaxed) != 0;
+
+    if (blank_present)
+        WARN("Application is presenting user index %u, but it has never been rendered to.\n", chain->request.user_index);
+
+    memset(&dep_info, 0, sizeof(dep_info));
+    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.imageMemoryBarrierCount = ARRAY_SIZE(image_barrier);
+    dep_info.pImageMemoryBarriers = image_barrier;
+
+    memset(image_barrier, 0, sizeof(image_barrier));
+    image_barrier[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    image_barrier[0].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    image_barrier[0].dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    image_barrier[0].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    image_barrier[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    image_barrier[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    image_barrier[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    image_barrier[0].image = chain->present.vk_backbuffer_images[swapchain_index];
+    image_barrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_barrier[0].subresourceRange.levelCount = 1;
+    image_barrier[0].subresourceRange.layerCount = 1;
+
+    image_barrier[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    image_barrier[1].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    image_barrier[1].dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    image_barrier[1].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    image_barrier[1].oldLayout = resource->common_layout;
+    image_barrier[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    image_barrier[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    image_barrier[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    image_barrier[1].image = resource->res.vk_image;
+    image_barrier[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_barrier[1].subresourceRange.levelCount = 1;
+    image_barrier[1].subresourceRange.layerCount = 1;
+
+    VK_CALL(vkCmdPipelineBarrier2(vk_cmd, &dep_info));
+
+    if (blank_present)
+    {
+        VkClearColorValue clear_value;
+        VkImageSubresourceRange range;
+
+        memset(&clear_value, 0, sizeof(clear_value));
+        range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        range.baseArrayLayer = 0;
+        range.baseMipLevel = 0;
+        range.layerCount = 1;
+        range.levelCount = 1;
+
+        VK_CALL(vkCmdClearColorImage(vk_cmd,
+                image_barrier[0].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                &clear_value, 1, &range));
+    }
+    else
+    {
+        /* Just use copy for now. */
+        VkCopyImageInfo2 copy_info;
+        VkImageCopy2 image_copy;
+        memset(&copy_info, 0, sizeof(copy_info));
+        memset(&image_copy, 0, sizeof(image_copy));
+
+        copy_info.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2;
+        copy_info.regionCount = 1;
+        copy_info.pRegions = &image_copy;
+        copy_info.dstImage = image_barrier[0].image;
+        copy_info.srcImage = image_barrier[1].image;
+        copy_info.dstImageLayout = image_barrier[0].newLayout;
+        copy_info.srcImageLayout = image_barrier[1].newLayout;
+
+        image_copy.sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2;
+        image_copy.dstSubresource.layerCount = 1;
+        image_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image_copy.srcSubresource = image_copy.dstSubresource;
+        image_copy.extent.width = chain->present.backbuffer_width;
+        image_copy.extent.height = chain->present.backbuffer_height;
+        image_copy.extent.depth = 1;
+
+        VK_CALL(vkCmdCopyImage2(vk_cmd, &copy_info));
+    }
+
+    image_barrier[0].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    image_barrier[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    image_barrier[0].dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+    image_barrier[0].dstAccessMask = VK_ACCESS_2_NONE;
+    image_barrier[0].oldLayout = image_barrier[0].newLayout;
+    image_barrier[0].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    image_barrier[1].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    image_barrier[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    image_barrier[1].dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+    image_barrier[1].dstAccessMask = VK_ACCESS_2_NONE;
+    image_barrier[1].oldLayout = image_barrier[1].newLayout;
+    image_barrier[1].newLayout = resource->common_layout;
+
+    VK_CALL(vkCmdPipelineBarrier2(vk_cmd, &dep_info));
 }
 
 static void dxgi_vk_swap_chain_record_render_pass(struct dxgi_vk_swap_chain *chain, VkCommandBuffer vk_cmd, uint32_t swapchain_index)
@@ -2171,14 +2292,16 @@ static bool dxgi_vk_swap_chain_submit_blit(struct dxgi_vk_swap_chain *chain, uin
 {
     const struct vkd3d_vk_device_procs *vk_procs = &chain->queue->device->vk_procs;
     VkDevice vk_device = chain->queue->device->vk_device;
-    VkSemaphoreSubmitInfo signal_semaphore_info[2];
+    VkSemaphoreSubmitInfo signal_semaphore_info[3];
+    VkSemaphoreSubmitInfo wait_semaphore_info[2];
     VkSemaphoreCreateInfo semaphore_create_info;
-    VkSemaphoreSubmitInfo wait_semaphore_info;
     VkCommandBufferAllocateInfo allocate_info;
     VkCommandBufferSubmitInfo cmd_buffer_info;
     VkCommandBufferBeginInfo cmd_begin_info;
+    VkCommandBuffer *blit_command_buffers;
     VkSubmitInfo2 submit_infos[2];
     VkCommandBuffer vk_cmd;
+    bool async_compute;
     VkQueue vk_queue;
     VkResult vr;
 
@@ -2197,15 +2320,24 @@ static bool dxgi_vk_swap_chain_submit_blit(struct dxgi_vk_swap_chain *chain, uin
         }
     }
 
-    if (!chain->present.vk_blit_command_buffers[swapchain_index])
+    async_compute = chain->async_queue != NULL;
+    blit_command_buffers = async_compute ?
+            chain->present.vk_compute_blit_command_buffers :
+            chain->present.vk_graphics_blit_command_buffers;
+
+    if (!blit_command_buffers[swapchain_index])
     {
         memset(&allocate_info, 0, sizeof(allocate_info));
         allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocate_info.commandBufferCount = 1;
-        allocate_info.commandPool = chain->present.vk_blit_command_pool;
+
+        allocate_info.commandPool = async_compute ?
+                chain->present.vk_compute_blit_command_pool :
+                chain->present.vk_graphics_blit_command_pool;
+
         allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         vr = VK_CALL(vkAllocateCommandBuffers(vk_device, &allocate_info,
-                    &chain->present.vk_blit_command_buffers[swapchain_index]));
+                    &blit_command_buffers[swapchain_index]));
         if (vr < 0)
         {
             ERR("Failed to allocate command buffers, vr %d\n", vr);
@@ -2215,32 +2347,30 @@ static bool dxgi_vk_swap_chain_submit_blit(struct dxgi_vk_swap_chain *chain, uin
 
     dxgi_vk_swap_chain_drain_internal_blit_semaphore(chain, chain->present.backbuffer_blit_timelines[swapchain_index]);
 
-    vk_cmd = chain->present.vk_blit_command_buffers[swapchain_index];
+    vk_cmd = blit_command_buffers[swapchain_index];
 
     VK_CALL(vkResetCommandBuffer(vk_cmd, 0));
     memset(&cmd_begin_info, 0, sizeof(cmd_begin_info));
     cmd_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cmd_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CALL(vkBeginCommandBuffer(vk_cmd, &cmd_begin_info));
-    dxgi_vk_swap_chain_record_render_pass(chain, vk_cmd, swapchain_index);
+    if (async_compute)
+        dxgi_vk_swap_chain_record_compute_blit(chain, vk_cmd, swapchain_index);
+    else
+        dxgi_vk_swap_chain_record_render_pass(chain, vk_cmd, swapchain_index);
     VK_CALL(vkEndCommandBuffer(vk_cmd));
 
     assert(chain->present.acquire_semaphore_signalled[chain->present.acquire_semaphore_index]);
-    memset(&wait_semaphore_info, 0, sizeof(wait_semaphore_info));
-    wait_semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    wait_semaphore_info.semaphore = chain->present.vk_acquire_semaphore[chain->present.acquire_semaphore_index];
-    wait_semaphore_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    memset(&wait_semaphore_info[0], 0, sizeof(wait_semaphore_info[0]));
+    wait_semaphore_info[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    wait_semaphore_info[0].semaphore = chain->present.vk_acquire_semaphore[chain->present.acquire_semaphore_index];
+    wait_semaphore_info[0].stageMask =
+            async_compute ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
     memset(signal_semaphore_info, 0, sizeof(signal_semaphore_info));
     signal_semaphore_info[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     signal_semaphore_info[0].semaphore = chain->present.vk_release_semaphores[swapchain_index];
     signal_semaphore_info[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-
-    chain->present.internal_blit_count += 1;
-    signal_semaphore_info[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    signal_semaphore_info[1].semaphore = chain->present.vk_internal_blit_semaphore;
-    signal_semaphore_info[1].value = chain->present.internal_blit_count;
-    signal_semaphore_info[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     memset(&cmd_buffer_info, 0, sizeof(cmd_buffer_info));
     cmd_buffer_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -2250,20 +2380,34 @@ static bool dxgi_vk_swap_chain_submit_blit(struct dxgi_vk_swap_chain *chain, uin
     submit_infos[0].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
     submit_infos[0].commandBufferInfoCount = 1;
     submit_infos[0].pCommandBufferInfos = &cmd_buffer_info;
-    submit_infos[0].pWaitSemaphoreInfos = &wait_semaphore_info;
+    submit_infos[0].pWaitSemaphoreInfos = &wait_semaphore_info[0];
     submit_infos[0].waitSemaphoreInfoCount = 1;
     submit_infos[0].signalSemaphoreInfoCount = 1;
     submit_infos[0].pSignalSemaphoreInfos = &signal_semaphore_info[0];
+
+    if (async_compute)
+    {
+        vkd3d_device_swapchain_patch_implicit_sync_semaphores(&chain->queue->device->swapchain_info,
+                &submit_infos[0], &submit_infos[0],
+                wait_semaphore_info, signal_semaphore_info,
+                1u << chain->user.backbuffers[chain->request.user_index]->swap_chain_implicit_sync_index);
+    }
 
     /* Internal blit semaphore must be signaled after we signal vk_release_semaphores.
      * To guarantee this, the signals must happen in different batches. */
     submit_infos[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
     submit_infos[1].signalSemaphoreInfoCount = 1;
-    submit_infos[1].pSignalSemaphoreInfos = &signal_semaphore_info[1];
+    submit_infos[1].pSignalSemaphoreInfos = &signal_semaphore_info[submit_infos[0].signalSemaphoreInfoCount];
 
-    vk_queue = vkd3d_queue_acquire(chain->queue->vkd3d_queue);
+    chain->present.internal_blit_count += 1;
+    signal_semaphore_info[submit_infos[0].signalSemaphoreInfoCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signal_semaphore_info[submit_infos[0].signalSemaphoreInfoCount].semaphore = chain->present.vk_internal_blit_semaphore;
+    signal_semaphore_info[submit_infos[0].signalSemaphoreInfoCount].value = chain->present.internal_blit_count;
+    signal_semaphore_info[submit_infos[0].signalSemaphoreInfoCount].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+    vk_queue = vkd3d_queue_acquire(async_compute ? chain->async_queue : chain->queue->vkd3d_queue);
     vr = VK_CALL(vkQueueSubmit2(vk_queue, ARRAY_SIZE(submit_infos), submit_infos, VK_NULL_HANDLE));
-    vkd3d_queue_release(chain->queue->vkd3d_queue);
+    vkd3d_queue_release(async_compute ? chain->async_queue : chain->queue->vkd3d_queue);
     VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(chain->queue->device, vr == VK_ERROR_DEVICE_LOST);
 
     if (vr < 0)
@@ -3030,17 +3174,17 @@ static HRESULT dxgi_vk_swap_chain_init(struct dxgi_vk_swap_chain *chain, IDXGIVk
     INFO("Creating swapchain (%u x %u), BufferCount = %u.\n",
             pDesc->Width, pDesc->Height, pDesc->BufferCount);
 
+    if (FAILED(hr = dxgi_vk_swap_chain_create_surface(chain, pFactory)))
+        return hr;
+
     if (FAILED(hr = dxgi_vk_swap_chain_reallocate_user_buffers(chain)))
         goto cleanup_common;
 
     if (FAILED(hr = dxgi_vk_swap_chain_init_sync_objects(chain)))
         goto cleanup_common;
 
-    if (FAILED(hr = dxgi_vk_swap_chain_create_surface(chain, pFactory)))
-        goto cleanup_sync_objects;
-
     if (FAILED(hr = dxgi_vk_swap_chain_init_waiter_thread(chain)))
-        goto cleanup_surface;
+        goto cleanup_sync_objects;
 
     if (FAILED(hr = dxgi_vk_swap_chain_init_low_latency(chain)))
         goto cleanup_waiter_thread;
@@ -3055,12 +3199,11 @@ cleanup_low_latency:
     dxgi_vk_swap_chain_cleanup_low_latency(chain);
 cleanup_waiter_thread:
     dxgi_vk_swap_chain_cleanup_waiter_thread(chain);
-cleanup_surface:
-    dxgi_vk_swap_chain_cleanup_surface(chain);
 cleanup_sync_objects:
     dxgi_vk_swap_chain_cleanup_sync_objects(chain);
 cleanup_common:
     dxgi_vk_swap_chain_cleanup_common(chain);
+    dxgi_vk_swap_chain_cleanup_surface(chain);
     return hr;
 }
 
