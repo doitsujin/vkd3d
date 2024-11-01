@@ -975,8 +975,8 @@ struct d3d12_sparse_tile
         struct d3d12_sparse_image_region image;
         struct d3d12_sparse_buffer_region buffer;
     };
-    VkDeviceMemory vk_memory;
-    VkDeviceSize vk_offset;
+    struct d3d12_heap *heap;
+    uint64_t heap_offset;
 };
 
 struct d3d12_sparse_info
@@ -3142,16 +3142,16 @@ struct vkd3d_sparse_memory_bind
 {
     uint32_t dst_tile;
     uint32_t src_tile;
-    VkDeviceMemory vk_memory;
-    VkDeviceSize vk_offset;
+    struct d3d12_heap *heap;
+    uint64_t heap_offset;
 };
 
 struct vkd3d_sparse_memory_bind_range
 {
     uint32_t tile_index;
     uint32_t tile_count;
-    VkDeviceMemory vk_memory;
-    VkDeviceSize vk_offset;
+    struct d3d12_heap *heap;
+    uint64_t heap_offset;
 };
 
 struct d3d12_command_queue_submission_wait

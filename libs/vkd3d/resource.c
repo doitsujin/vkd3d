@@ -3227,8 +3227,8 @@ static HRESULT d3d12_resource_init_sparse_info(struct d3d12_resource *resource,
             }
         }
 
-        sparse->tiles[i].vk_memory = VK_NULL_HANDLE;
-        sparse->tiles[i].vk_offset = 0;
+        sparse->tiles[i].heap = NULL;
+        sparse->tiles[i].heap_offset = 0;
     }
 
     if (FAILED(hr = d3d12_resource_bind_sparse_metadata(resource, device, sparse)))
@@ -3240,6 +3240,7 @@ static HRESULT d3d12_resource_init_sparse_info(struct d3d12_resource *resource,
 static void d3d12_resource_destroy(struct d3d12_resource *resource, struct d3d12_device *device)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+    unsigned int i;
 
     d3d_destruction_notifier_free(&resource->destruction_notifier);
 
@@ -3252,6 +3253,12 @@ static void d3d12_resource_destroy(struct d3d12_resource *resource, struct d3d12
 
     if (resource->flags & VKD3D_RESOURCE_RESERVED)
     {
+        for (i = 0; i < resource->sparse.tile_count; i++)
+        {
+            if (resource->sparse.tiles[i].heap)
+                d3d12_heap_decref(resource->sparse.tiles[i].heap);
+        }
+
         vkd3d_free_device_memory(device, &resource->sparse.vk_metadata_memory);
         vkd3d_free(resource->sparse.tiles);
         vkd3d_free(resource->sparse.tilings);

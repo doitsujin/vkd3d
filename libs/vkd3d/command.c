@@ -17454,16 +17454,17 @@ static void STDMETHODCALLTYPE d3d12_command_queue_UpdateTileMappings(ID3D12Comma
 
             if (range_flag == D3D12_TILE_RANGE_FLAG_NULL)
             {
-                bind->vk_memory = VK_NULL_HANDLE;
-                bind->vk_offset = 0;
+                bind->heap = NULL;
+                bind->heap_offset = 0;
             }
             else
             {
-                bind->vk_memory = memory_heap->allocation.device_allocation.vk_memory;
-                bind->vk_offset = memory_heap->allocation.offset + VKD3D_TILE_SIZE * range_offset;
+                d3d12_heap_incref(memory_heap);
+                bind->heap = memory_heap;
+                bind->heap_offset = VKD3D_TILE_SIZE * range_offset;
 
                 if (range_flag != D3D12_TILE_RANGE_FLAG_REUSE_SINGLE_TILE)
-                    bind->vk_offset += VKD3D_TILE_SIZE * range_tile;
+                    bind->heap_offset += VKD3D_TILE_SIZE * range_tile;
             }
         }
 
@@ -17524,8 +17525,8 @@ static void STDMETHODCALLTYPE d3d12_command_queue_CopyTileMappings(ID3D12Command
         bind = &sub.bind_sparse.bind_infos[i];
         bind->dst_tile = vkd3d_get_tile_index_from_region(&dst_res->sparse, dst_region_start_coordinate, region_size, i);
         bind->src_tile = vkd3d_get_tile_index_from_region(&src_res->sparse, src_region_start_coordinate, region_size, i);
-        bind->vk_memory = VK_NULL_HANDLE;
-        bind->vk_offset = 0;
+        bind->heap = NULL;
+        bind->heap_offset = 0;
     }
 
     d3d12_command_queue_add_submission(command_queue, &sub);
@@ -18771,8 +18772,8 @@ static unsigned int vkd3d_compact_sparse_bind_ranges(const struct d3d12_resource
         unsigned int count, enum vkd3d_sparse_memory_bind_mode mode, bool can_compact)
 {
     struct vkd3d_sparse_memory_bind_range *range = NULL;
-    VkDeviceMemory vk_memory;
-    VkDeviceSize vk_offset;
+    struct d3d12_heap *heap;
+    uint64_t heap_offset;
     unsigned int i, j;
 
     for (i = 0, j = 0; i < count; i++)
@@ -18781,32 +18782,60 @@ static unsigned int vkd3d_compact_sparse_bind_ranges(const struct d3d12_resource
 
         if (mode == VKD3D_SPARSE_MEMORY_BIND_MODE_UPDATE)
         {
-            vk_memory = bind->vk_memory;
-            vk_offset = bind->vk_offset;
+            heap = bind->heap;
+            heap_offset = bind->heap_offset;
         }
         else /* if (mode == VKD3D_SPARSE_MEMORY_BIND_MODE_COPY) */
         {
             struct d3d12_sparse_tile *src_tile = &src_resource->sparse.tiles[bind->src_tile];
-            vk_memory = src_tile->vk_memory;
-            vk_offset = src_tile->vk_offset;
+            heap = src_tile->heap;
+            heap_offset = src_tile->heap_offset;
+
+            if (heap)
+                d3d12_heap_incref(heap);
         }
 
-        if (can_compact && range && bind->dst_tile == range->tile_index + range->tile_count && vk_memory == range->vk_memory &&
-                (vk_offset == range->vk_offset + range->tile_count * VKD3D_TILE_SIZE || !vk_memory))
+        if (can_compact && range && bind->dst_tile == range->tile_index + range->tile_count && heap == range->heap &&
+                (heap_offset == range->heap_offset + range->tile_count * VKD3D_TILE_SIZE || !heap))
         {
             range->tile_count++;
+
+            if (heap)
+                d3d12_heap_decref(heap);
         }
         else
         {
             range = &bind_ranges[j++];
             range->tile_index = bind->dst_tile;
             range->tile_count = 1;
-            range->vk_memory = vk_memory;
-            range->vk_offset = vk_offset;
+            range->heap = heap;
+            range->heap_offset = heap_offset;
         }
     }
 
     return j;
+}
+
+static void vkd3d_free_heaps_in_sparse_bind_infos(unsigned int count, struct vkd3d_sparse_memory_bind *bind_infos)
+{
+    unsigned int i;
+
+    for (i = 0; i < count; i++)
+    {
+        if (bind_infos[i].heap)
+            d3d12_heap_decref(bind_infos[i].heap);
+    }
+}
+
+static void vkd3d_free_heaps_in_sparse_bind_ranges(unsigned int count, struct vkd3d_sparse_memory_bind_range *bind_ranges)
+{
+    unsigned int i;
+
+    for (i = 0; i < count; i++)
+    {
+        if (bind_ranges[i].heap)
+            d3d12_heap_decref(bind_ranges[i].heap);
+    }
 }
 
 static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_queue,
@@ -18829,8 +18858,10 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
     struct vkd3d_queue *queue_sparse;
     struct vkd3d_queue *queue;
     VkSubmitInfo2 submit_info;
+    VkDeviceMemory vk_memory;
     uint32_t total_tiles = 0;
     VkQueue vk_queue_sparse;
+    VkDeviceSize vk_offset;
     unsigned int i, j, k;
     VkQueue vk_queue;
     bool can_compact;
@@ -18847,6 +18878,7 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
     if (!(bind_ranges = vkd3d_malloc(count * sizeof(*bind_ranges))))
     {
         ERR("Failed to allocate bind range info.\n");
+        vkd3d_free_heaps_in_sparse_bind_infos(count, bind_infos);
         goto cleanup;
     }
 
@@ -18862,6 +18894,7 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
         if (!(memory_binds = vkd3d_malloc(count * sizeof(*memory_binds))))
         {
             ERR("Failed to allocate sparse memory bind info.\n");
+            vkd3d_free_heaps_in_sparse_bind_ranges(count, bind_ranges);
             goto cleanup;
         }
 
@@ -18895,6 +18928,7 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
             if (!(memory_binds = vkd3d_malloc(opaque_bind_count * sizeof(*memory_binds))))
             {
                 ERR("Failed to allocate sparse memory bind info.\n");
+                vkd3d_free_heaps_in_sparse_bind_ranges(count, bind_ranges);
                 goto cleanup;
             }
 
@@ -18911,6 +18945,7 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
             if (!(image_binds = vkd3d_malloc(image_bind_count * sizeof(*image_binds))))
             {
                 ERR("Failed to allocate sparse memory bind info.\n");
+                vkd3d_free_heaps_in_sparse_bind_ranges(count, bind_ranges);
                 goto cleanup;
             }
 
@@ -18929,6 +18964,9 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
     {
         struct vkd3d_sparse_memory_bind_range *bind = &bind_ranges[i];
         total_tiles += bind->tile_count;
+
+        vk_memory = bind->heap ? bind->heap->allocation.device_allocation.vk_memory : VK_NULL_HANDLE;
+        vk_offset = bind->heap ? bind->heap->allocation.offset + bind->heap_offset : 0u;
 
         while (bind->tile_count)
         {
@@ -18950,8 +18988,8 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
                     vk_bind->extent.width = last_tile->image.offset.x + last_tile->image.extent.width;
                     vk_bind->extent.height = last_tile->image.offset.y + last_tile->image.extent.height;
                     vk_bind->extent.depth = last_tile->image.offset.z + last_tile->image.extent.depth;
-                    vk_bind->memory = bind->vk_memory;
-                    vk_bind->memoryOffset = bind->vk_offset;
+                    vk_bind->memory = vk_memory;
+                    vk_bind->memoryOffset = vk_offset;
                     vk_bind->flags = 0;
 
                     processed_tiles = tile_count;
@@ -18962,8 +19000,8 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
                     vk_bind->subresource = tile->image.subresource;
                     vk_bind->offset = tile->image.offset;
                     vk_bind->extent = tile->image.extent;
-                    vk_bind->memory = bind->vk_memory;
-                    vk_bind->memoryOffset = bind->vk_offset;
+                    vk_bind->memory = vk_memory;
+                    vk_bind->memoryOffset = vk_offset;
                     vk_bind->flags = 0;
 
                     processed_tiles = 1;
@@ -18978,8 +19016,8 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
                 vk_bind->size = last_tile->buffer.offset
                               + last_tile->buffer.length
                               - vk_bind->resourceOffset;
-                vk_bind->memory = bind->vk_memory;
-                vk_bind->memoryOffset = bind->vk_offset;
+                vk_bind->memory = vk_memory;
+                vk_bind->memoryOffset = vk_offset;
                 vk_bind->flags = 0;
 
                 processed_tiles = bind->tile_count;
@@ -18987,14 +19025,24 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
 
             for (j = 0; j < processed_tiles; j++)
             {
-                tile[j].vk_memory = bind->vk_memory;
-                tile[j].vk_offset = bind->vk_offset + j * VKD3D_TILE_SIZE;
+                if (tile[j].heap)
+                    d3d12_heap_decref(tile[j].heap);
+
+                tile[j].heap = bind->heap;
+                tile[j].heap_offset = bind->heap_offset + j * VKD3D_TILE_SIZE;
+
+                if (tile[j].heap)
+                    d3d12_heap_incref(tile[j].heap);
             }
 
             bind->tile_index += processed_tiles;
             bind->tile_count -= processed_tiles;
-            bind->vk_offset += processed_tiles * VKD3D_TILE_SIZE;
+
+            vk_offset += processed_tiles * VKD3D_TILE_SIZE;
         }
+
+        if (bind->heap)
+            d3d12_heap_decref(bind->heap);
     }
 
     /* Ensure that we use a queue that supports sparse binding */
