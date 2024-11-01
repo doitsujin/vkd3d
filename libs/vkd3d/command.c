@@ -512,12 +512,25 @@ static HRESULT vkd3d_create_timeline_semaphore(struct d3d12_device *device, uint
     return hresult_from_vk_result(vr);
 }
 
+static void vkd3d_fence_wait_free_tracked_objects(const struct vkd3d_fence_wait_info *fence_info)
+{
+    size_t i;
+
+    for (i = 0; i < fence_info->num_command_allocators; i++)
+        d3d12_command_allocator_dec_ref(fence_info->command_allocators[i]);
+
+    for (i = 0; i < fence_info->num_heaps; i++)
+        d3d12_heap_decref(fence_info->heaps[i]);
+
+    vkd3d_free(fence_info->command_allocators);
+    vkd3d_free(fence_info->heaps);
+}
+
 HRESULT vkd3d_enqueue_timeline_semaphore(struct vkd3d_fence_worker *worker,
         const struct vkd3d_fence_wait_info *fence_info,
         const struct vkd3d_queue_timeline_trace_cookie *timeline_cookie)
 {
     struct vkd3d_waiting_fence *waiting_fence;
-    size_t i;
     int rc;
 
     TRACE("worker %p, fence %p, value %#"PRIx64", vk_semaphore %p, vk_semaphore_value %#"PRIx64", signal %d.\n",
@@ -527,9 +540,8 @@ HRESULT vkd3d_enqueue_timeline_semaphore(struct vkd3d_fence_worker *worker,
     if ((rc = pthread_mutex_lock(&worker->mutex)))
     {
         ERR("Failed to lock mutex, error %d.\n", rc);
-        for (i = 0; i < fence_info->num_command_allocators; i++)
-            d3d12_command_allocator_dec_ref(fence_info->command_allocators[i]);
-        vkd3d_free(fence_info->command_allocators);
+        vkd3d_fence_wait_free_tracked_objects(fence_info);
+
         if (timeline_cookie)
         {
             vkd3d_queue_timeline_trace_complete_execute(&worker->device->queue_timeline_trace,
@@ -543,9 +555,8 @@ HRESULT vkd3d_enqueue_timeline_semaphore(struct vkd3d_fence_worker *worker,
     {
         ERR("Failed to add GPU timeline semaphore.\n");
         pthread_mutex_unlock(&worker->mutex);
-        for (i = 0; i < fence_info->num_command_allocators; i++)
-            d3d12_command_allocator_dec_ref(fence_info->command_allocators[i]);
-        vkd3d_free(fence_info->command_allocators);
+        vkd3d_fence_wait_free_tracked_objects(fence_info);
+
         if (timeline_cookie)
         {
             vkd3d_queue_timeline_trace_complete_execute(&worker->device->queue_timeline_trace,
@@ -576,10 +587,7 @@ HRESULT vkd3d_enqueue_timeline_semaphore(struct vkd3d_fence_worker *worker,
 static void vkd3d_waiting_fence_release_submissions(struct d3d12_device *device,
         struct vkd3d_fence_worker *worker, const struct vkd3d_waiting_fence *fence)
 {
-    size_t i;
-    for (i = 0; i < fence->fence_info.num_command_allocators; i++)
-        d3d12_command_allocator_dec_ref(fence->fence_info.command_allocators[i]);
-    vkd3d_free(fence->fence_info.command_allocators);
+    vkd3d_fence_wait_free_tracked_objects(&fence->fence_info);
     vkd3d_queue_timeline_trace_complete_execute(&device->queue_timeline_trace, worker, fence->timeline_cookie);
 }
 
@@ -18838,6 +18846,14 @@ static void vkd3d_free_heaps_in_sparse_bind_ranges(unsigned int count, struct vk
     }
 }
 
+static void vkd3d_free_heaps_in_heap_list(unsigned int count, struct d3d12_heap **heaps)
+{
+    unsigned int i;
+
+    for (i = 0; i < count; i++)
+        d3d12_heap_decref(heaps[i]);
+}
+
 static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_queue,
         enum vkd3d_sparse_memory_bind_mode mode, struct d3d12_resource *dst_resource,
         struct d3d12_resource *src_resource, unsigned int count,
@@ -18856,12 +18872,15 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
     VkSparseImageMemoryBindInfo image_info;
     VkBindSparseInfo bind_sparse_info;
     struct vkd3d_queue *queue_sparse;
+    struct d3d12_heap **heaps = NULL;
     struct vkd3d_queue *queue;
     VkSubmitInfo2 submit_info;
     VkDeviceMemory vk_memory;
     uint32_t total_tiles = 0;
     VkQueue vk_queue_sparse;
     VkDeviceSize vk_offset;
+    size_t heap_count = 0;
+    size_t heaps_size = 0;
     unsigned int i, j, k;
     VkQueue vk_queue;
     bool can_compact;
@@ -19026,7 +19045,10 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
             for (j = 0; j < processed_tiles; j++)
             {
                 if (tile[j].heap)
-                    d3d12_heap_decref(tile[j].heap);
+                {
+                    vkd3d_array_reserve((void**)&heaps, &heaps_size, heap_count + 1u, sizeof(*heaps));
+                    heaps[heap_count++] = tile[j].heap;
+                }
 
                 tile[j].heap = bind->heap;
                 tile[j].heap_offset = bind->heap_offset + j * VKD3D_TILE_SIZE;
@@ -19056,6 +19078,7 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
     if (!(vk_queue = vkd3d_queue_acquire(queue)))
     {
         ERR("Failed to acquire queue %p.\n", queue);
+        vkd3d_free_heaps_in_heap_list(heap_count, heaps);
         goto cleanup;
     }
 
@@ -19081,6 +19104,7 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
         if (!(vk_queue_sparse = vkd3d_queue_acquire(queue_sparse)))
         {
             ERR("Failed to acquire queue %p.\n", queue_sparse);
+            vkd3d_free_heaps_in_heap_list(heap_count, heaps);
             vkd3d_queue_release(queue);
             goto cleanup;
         }
@@ -19120,19 +19144,25 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
     memset(&fence_info, 0, sizeof(fence_info));
     fence_info.vk_semaphore = queue->submission_timeline;
     fence_info.vk_semaphore_value = queue->submission_timeline_count;
+    fence_info.heaps = heaps;
+    fence_info.num_heaps = heap_count;
+
+    heaps = NULL;
 
     vkd3d_queue_release(queue);
     VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST);
 
     cookie = vkd3d_queue_timeline_trace_register_sparse(&command_queue->device->queue_timeline_trace, total_tiles);
-    if (vkd3d_queue_timeline_trace_cookie_is_valid(cookie))
-        if (FAILED(vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, &cookie)))
-            ERR("Failed to enqueue timeline semaphore.\n");
+
+    if (FAILED(vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info,
+            vkd3d_queue_timeline_trace_cookie_is_valid(cookie) ? &cookie : NULL)))
+        ERR("Failed to enqueue timeline semaphore.\n");
 
 cleanup:
     vkd3d_free(memory_binds);
     vkd3d_free(image_binds);
     vkd3d_free(bind_ranges);
+    vkd3d_free(heaps);
 }
 
 void d3d12_command_queue_submit_stop(struct d3d12_command_queue *queue)

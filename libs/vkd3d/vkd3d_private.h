@@ -237,6 +237,8 @@ struct vkd3d_fence_wait_info
     uint64_t update_count;
     struct d3d12_command_allocator **command_allocators;
     size_t num_command_allocators;
+    struct d3d12_heap **heaps;
+    size_t num_heaps;
     bool signal;
 };
 
