@@ -3263,7 +3263,73 @@ static void d3d12_resource_destroy(struct d3d12_resource *resource, struct d3d12
     if (d3d12_resource_is_texture(resource))
         VK_CALL(vkDestroyImage(device->vk_device, resource->res.vk_image, NULL));
     else if (resource->flags & VKD3D_RESOURCE_RESERVED)
-        VK_CALL(vkDestroyBuffer(device->vk_device, resource->res.vk_buffer, NULL));
+    {
+        struct vkd3d_queue *queue = device->queue_families[VKD3D_QUEUE_FAMILY_SPARSE_BINDING]->queues[0];
+        unsigned int i, j;
+        uint32_t wait_count = 0;
+        uint64_t wait_values[16];
+        VkSemaphore wait_sems[16];
+
+        VkTimelineSemaphoreSubmitInfo wait = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+        VkBindSparseInfo bind = { VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, &wait };
+
+        VkSparseBufferMemoryBindInfo buffer_bind = { };
+        VkSparseMemoryBind memory_bind = { };
+        memory_bind.size = resource->desc.Width;
+
+        buffer_bind.buffer = resource->res.vk_buffer;
+        buffer_bind.bindCount = 1;
+        buffer_bind.pBinds = &memory_bind;
+
+        for (i = 0; i < VKD3D_QUEUE_FAMILY_COUNT; i++)
+        {
+            struct vkd3d_queue_family_info *queue_family = device->queue_families[i];
+            bool match = false;
+
+            for (j = i; j < VKD3D_QUEUE_FAMILY_COUNT; j++)
+                match |= device->queue_families[j] == queue_family;
+
+            if (!match)
+            {
+                for (j = 0; j < queue_family->queue_count; j++)
+                {
+                    vkd3d_queue_acquire(queue_family->queues[j]);
+
+                    wait_sems[wait_count] = queue_family->queues[j]->submission_timeline;
+                    wait_values[wait_count] = queue_family->queues[j]->submission_timeline_count;
+                    wait_count++;
+                }
+            }
+        }
+
+        wait.waitSemaphoreValueCount = wait_count;
+        wait.pWaitSemaphoreValues = wait_values;
+
+        bind.waitSemaphoreCount = wait_count;
+        bind.pWaitSemaphores = wait_sems;
+        bind.bufferBindCount = 1;
+        bind.pBufferBinds = &buffer_bind;
+
+        VK_CALL(vkQueueBindSparse(queue->vk_queue, 1, &bind, VK_NULL_HANDLE));
+        VK_CALL(vkQueueWaitIdle(queue->vk_queue));
+
+        for (i = 0; i < VKD3D_QUEUE_FAMILY_COUNT; i++)
+        {
+            struct vkd3d_queue_family_info *queue_family = device->queue_families[i];
+            bool match = false;
+
+            for (j = i; j < VKD3D_QUEUE_FAMILY_COUNT; j++)
+                match |= device->queue_families[j] == queue_family;
+
+            if (!match)
+            {
+                for (j = 0; j < queue_family->queue_count; j++)
+                    vkd3d_queue_release(queue_family->queues[j]);
+            }
+        }
+
+        // VK_CALL(vkDestroyBuffer(device->vk_device, resource->res.vk_buffer, NULL));
+    }
 
     if ((resource->flags & VKD3D_RESOURCE_ALLOCATION) && resource->mem.device_allocation.vk_memory)
         vkd3d_free_memory(device, &device->memory_allocator, &resource->mem);
