@@ -8272,6 +8272,12 @@ HRESULT d3d12_descriptor_heap_create(struct d3d12_device *device,
         return E_OUTOFMEMORY;
     }
 
+    if ((desc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) && desc->NumDescriptors > 1000000u)
+    {
+        WARN("frog\n");
+        return E_OUTOFMEMORY;
+    }
+
     if (desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV || desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
     {
         if (d3d12_device_use_embedded_mutable_descriptors(device))
