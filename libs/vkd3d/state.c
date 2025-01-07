@@ -3734,6 +3734,7 @@ vkd3d_dynamic_state_list[] =
     { VKD3D_DYNAMIC_STATE_DEPTH_BIAS,            VK_DYNAMIC_STATE_DEPTH_BIAS },
     { VKD3D_DYNAMIC_STATE_DEPTH_BIAS,            VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE },
     { VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES, VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT },
+    { VKD3D_DYNAMIC_STATE_VERTEX_INPUT,          VK_DYNAMIC_STATE_VERTEX_INPUT_EXT },
 };
 
 uint32_t vkd3d_init_dynamic_state_array(VkDynamicState *dynamic_states, uint32_t dynamic_state_flags)
@@ -3821,6 +3822,7 @@ VkPipeline vkd3d_vertex_input_pipeline_create(struct d3d12_device *device,
     struct vkd3d_vertex_input_pipeline_desc desc_copy = *desc;
     VkGraphicsPipelineCreateInfo create_info;
     VkPipeline vk_pipeline;
+    unsigned int i;
     VkResult vr;
 
     vkd3d_vertex_input_pipeline_desc_prepare(&desc_copy);
@@ -3837,6 +3839,12 @@ VkPipeline vkd3d_vertex_input_pipeline_create(struct d3d12_device *device,
     create_info.pVertexInputState = &desc_copy.vi_info;
     create_info.pDynamicState = &desc_copy.dy_info;
     create_info.basePipelineIndex = -1;
+
+    for (i = 0; i < desc_copy.dy_info.dynamicStateCount; i++)
+    {
+        if (desc_copy.dy_info.pDynamicStates[i] == VK_DYNAMIC_STATE_VERTEX_INPUT_EXT)
+            create_info.pVertexInputState = NULL;
+    }
 
     if (d3d12_device_uses_descriptor_buffers(device))
         create_info.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
@@ -4010,8 +4018,13 @@ uint32_t d3d12_graphics_pipeline_state_get_dynamic_state_flags(struct d3d12_pipe
     /* Enable dynamic states as necessary */
     dynamic_state_flags |= VKD3D_DYNAMIC_STATE_VIEWPORT | VKD3D_DYNAMIC_STATE_SCISSOR;
 
-    if (graphics->attribute_binding_count && !is_mesh_pipeline)
-        dynamic_state_flags |= VKD3D_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE;
+    if (!is_mesh_pipeline)
+    {
+        if (state->device->device_info.vertex_input_dynamic_state_features.vertexInputDynamicState)
+            dynamic_state_flags |= VKD3D_DYNAMIC_STATE_VERTEX_INPUT;
+        if (graphics->attribute_binding_count)
+            dynamic_state_flags |= VKD3D_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE;
+    }
 
     if (is_tess_pipeline && state->device->device_info.extended_dynamic_state2_features.extendedDynamicState2PatchControlPoints)
         dynamic_state_flags |= VKD3D_DYNAMIC_STATE_PATCH_CONTROL_POINTS;
@@ -5798,7 +5811,9 @@ VkPipeline d3d12_pipeline_state_create_pipeline_variant(struct d3d12_pipeline_st
 
     if (has_vertex_input_state)
     {
-        pipeline_desc.pVertexInputState = &vertex_input_desc.vi_info;
+        if (!((*dynamic_state_flags) & VKD3D_DYNAMIC_STATE_VERTEX_INPUT))
+            pipeline_desc.pVertexInputState = &vertex_input_desc.vi_info;
+
         pipeline_desc.pInputAssemblyState = &vertex_input_desc.ia_info;
     }
 

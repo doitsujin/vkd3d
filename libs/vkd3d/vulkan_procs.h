@@ -376,6 +376,9 @@ VK_DEVICE_EXT_PFN(vkSetLatencyMarkerNV)
 VK_DEVICE_EXT_PFN(vkGetLatencyTimingsNV)
 VK_DEVICE_EXT_PFN(vkQueueNotifyOutOfBandNV)
 
+/* VK_EXT_vertex_input_dynamic_state */
+VK_DEVICE_EXT_PFN(vkCmdSetVertexInputEXT)
+
 #undef VK_INSTANCE_PFN
 #undef VK_INSTANCE_EXT_PFN
 #undef VK_DEVICE_PFN

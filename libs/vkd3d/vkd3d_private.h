@@ -167,6 +167,7 @@ struct vkd3d_vulkan_info
     bool EXT_memory_budget;
     bool EXT_device_address_binding_report;
     bool EXT_depth_bias_control;
+    bool EXT_vertex_input_dynamic_state;
     /* AMD device extensions */
     bool AMD_buffer_marker;
     bool AMD_device_coherent_memory;
@@ -1941,6 +1942,7 @@ enum vkd3d_dynamic_state_flag
     VKD3D_DYNAMIC_STATE_STENCIL_WRITE_MASK    = (1 << 11),
     VKD3D_DYNAMIC_STATE_DEPTH_BIAS            = (1 << 12),
     VKD3D_DYNAMIC_STATE_RASTERIZATION_SAMPLES = (1 << 13),
+    VKD3D_DYNAMIC_STATE_VERTEX_INPUT          = (1 << 14),
 };
 
 struct vkd3d_shader_debug_ring_spec_constants
@@ -1951,10 +1953,11 @@ struct vkd3d_shader_debug_ring_spec_constants
     uint32_t ring_words;
 };
 
-#define VKD3D_MAX_VERTEX_INPUT_DYNAMIC_STATES (3u)
+#define VKD3D_MAX_VERTEX_INPUT_DYNAMIC_STATES (4u)
 #define VKD3D_VERTEX_INPUT_DYNAMIC_STATE_MASK (VKD3D_DYNAMIC_STATE_TOPOLOGY |\
                 VKD3D_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE |\
-                VKD3D_DYNAMIC_STATE_PRIMITIVE_RESTART)
+                VKD3D_DYNAMIC_STATE_PRIMITIVE_RESTART |\
+                VKD3D_DYNAMIC_STATE_VERTEX_INPUT)
 
 struct vkd3d_vertex_input_pipeline_desc
 {
@@ -4579,6 +4582,7 @@ struct vkd3d_physical_device_info
     VkPhysicalDeviceImageAlignmentControlPropertiesMESA image_alignment_control_properties;
     VkPhysicalDeviceDepthBiasControlFeaturesEXT depth_bias_control_features;
     VkPhysicalDeviceOpticalFlowFeaturesNV optical_flow_nv_features;
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vertex_input_dynamic_state_features;
 
     VkPhysicalDeviceFeatures2 features2;
 

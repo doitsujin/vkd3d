@@ -6033,6 +6033,9 @@ static bool d3d12_command_list_update_graphics_pipeline(struct d3d12_command_lis
         if ((new_active_flags & VKD3D_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE) && list->dynamic_state.dirty_vbos)
             list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_VERTEX_BUFFER_STRIDE;
 
+        if (new_active_flags & VKD3D_DYNAMIC_STATE_VERTEX_INPUT)
+            list->dynamic_state.dirty_flags |= VKD3D_DYNAMIC_STATE_VERTEX_INPUT;
+
         /* Reapply all dynamic states that were not dynamic in previously bound pipeline.
          * If we didn't use to have dynamic vertex strides, but we then bind a pipeline with dynamic strides,
          * we will need to rebind all VBOs. Mark dynamic stride as dirty in this case. */
@@ -6646,7 +6649,7 @@ static void d3d12_command_list_update_dynamic_state(struct d3d12_command_list *l
     const uint32_t *stride_align_masks;
     struct vkd3d_bitmask_range range;
     uint32_t update_vbos;
-    unsigned int i;
+    unsigned int i, j;
 
     /* Make sure we only update states that are dynamic in the pipeline */
     dyn_state->dirty_flags &= list->dynamic_state.active_flags;
@@ -6822,6 +6825,43 @@ static void d3d12_command_list_update_dynamic_state(struct d3d12_command_list *l
                     dyn_state->vertex_sizes + range.offset,
                     dyn_state->vertex_strides + range.offset));
         }
+    }
+
+    if (dyn_state->dirty_flags & VKD3D_DYNAMIC_STATE_VERTEX_INPUT)
+    {
+        VkVertexInputAttributeDescription2EXT attributes[32];
+        VkVertexInputBindingDescription2EXT bindings[32];
+
+        memset(attributes, 0, sizeof(attributes));
+        memset(bindings, 0, sizeof(bindings));
+
+        for (i = 0; i < list->state->graphics.attribute_count; i++)
+        {
+            attributes[i].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
+            attributes[i].location = list->state->graphics.attributes[i].location;
+            attributes[i].binding = list->state->graphics.attributes[i].binding;
+            attributes[i].format = list->state->graphics.attributes[i].format;
+            attributes[i].offset = list->state->graphics.attributes[i].offset;
+        }
+
+        for (i = 0; i < list->state->graphics.attribute_binding_count; i++)
+        {
+            bindings[i].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT;
+            bindings[i].inputRate = list->state->graphics.attribute_bindings[i].inputRate;
+            bindings[i].binding = list->state->graphics.attribute_bindings[i].binding;
+            bindings[i].divisor = 1;
+            bindings[i].stride = dyn_state->vertex_strides[bindings[i].binding];
+
+            for (j = 0; j < list->state->graphics.instance_divisor_count; j++)
+            {
+                if (bindings[i].binding == list->state->graphics.instance_divisors[j].binding)
+                    bindings[i].divisor = list->state->graphics.instance_divisors[j].divisor;
+            }
+        }
+
+        VK_CALL(vkCmdSetVertexInputEXT(list->cmd.vk_command_buffer,
+                list->state->graphics.attribute_binding_count, bindings,
+                list->state->graphics.attribute_count, attributes));
     }
 
     if (dyn_state->dirty_flags & VKD3D_DYNAMIC_STATE_FRAGMENT_SHADING_RATE)
