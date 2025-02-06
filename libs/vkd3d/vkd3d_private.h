@@ -241,6 +241,8 @@ struct vkd3d_fence_wait_info
     uint64_t update_count;
     struct d3d12_command_allocator **command_allocators;
     size_t num_command_allocators;
+    struct d3d12_resource **resources;
+    size_t num_resources;
     bool signal;
 };
 
@@ -3379,7 +3381,7 @@ struct d3d12_command_queue
 
         struct
         {
-            const struct d3d12_resource *resource;
+            struct d3d12_resource *resource;
             uint32_t *tile_mask;
         } *tracked;
         size_t tracked_size;

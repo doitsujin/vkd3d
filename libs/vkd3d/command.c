@@ -500,6 +500,9 @@ static void vkd3d_waiting_fence_release_submissions(struct d3d12_device *device,
     for (i = 0; i < fence->fence_info.num_command_allocators; i++)
         d3d12_command_allocator_dec_ref(fence->fence_info.command_allocators[i]);
     vkd3d_free(fence->fence_info.command_allocators);
+    for (i = 0; i < fence->fence_info.num_resources; i++)
+        d3d12_resource_decref(fence->fence_info.resources[i]);
+    vkd3d_free(fence->fence_info.resources);
     vkd3d_queue_timeline_trace_complete_execute(&device->queue_timeline_trace, worker, fence->timeline_cookie);
 }
 
@@ -17557,6 +17560,8 @@ static void STDMETHODCALLTYPE d3d12_command_queue_UpdateTileMappings(ID3D12Comma
     if (sub.bind_sparse.bind_count == 0)
         goto fail;
 
+    d3d12_resource_incref(res);
+
     vkd3d_free(bound_tiles);
     d3d12_command_queue_add_submission(command_queue, &sub);
     return;
@@ -19159,7 +19164,7 @@ static void d3d12_command_queue_flush_bind_sparse(struct d3d12_command_queue *co
 
 static void d3d12_command_queue_register_sparse_hazard(
         struct d3d12_command_queue *command_queue,
-        const struct d3d12_resource *dst_resource,
+        struct d3d12_resource *dst_resource,
         const struct vkd3d_sparse_memory_bind *binds, unsigned int count)
 {
     const struct vkd3d_sparse_memory_bind *bind;
@@ -19177,6 +19182,8 @@ static void d3d12_command_queue_register_sparse_hazard(
                 &command_queue->sparse.tracked_size,
                 command_queue->sparse.tracked_count + 1,
                 sizeof(*command_queue->sparse.tracked));
+
+        d3d12_resource_incref(dst_resource);
 
         command_queue->sparse.tracked[tracker_index].resource = dst_resource;
         command_queue->sparse.tracked[tracker_index].tile_mask =
@@ -19199,6 +19206,8 @@ static void d3d12_command_queue_register_sparse_hazard(
                 /* No need to reallocate the tile mask block, temporarily pilfer it. */
                 command_queue->sparse.tracked[tracker_index].tile_mask = NULL;
                 d3d12_command_queue_flush_bind_sparse(command_queue);
+
+                d3d12_resource_incref(dst_resource);
 
                 assert(command_queue->sparse.tracked_count == 0);
                 assert(command_queue->sparse.tracked_size >= 1);
@@ -19240,6 +19249,7 @@ static void d3d12_command_queue_bind_sparse(struct d3d12_command_queue *command_
     }
 
     d3d12_command_queue_register_sparse_hazard(command_queue, dst_resource, bind_infos, count);
+    d3d12_resource_decref(dst_resource);
 
     count = vkd3d_compact_sparse_bind_ranges(src_resource, bind_ranges, bind_infos, count, mode);
 
@@ -19501,6 +19511,11 @@ static void d3d12_command_queue_flush_bind_sparse(struct d3d12_command_queue *co
     memset(&fence_info, 0, sizeof(fence_info));
     fence_info.vk_semaphore = queue->submission_timeline;
     fence_info.vk_semaphore_value = queue->submission_timeline_count;
+    fence_info.num_resources = command_queue->sparse.tracked_count;
+    fence_info.resources = vkd3d_malloc(sizeof(*fence_info.resources) * fence_info.num_resources);
+
+    for (i = 0; i < command_queue->sparse.tracked_count; i++)
+        d3d12_resource_incref(fence_info.resources[i] = command_queue->sparse.tracked[i].resource);
 
     vkd3d_queue_release(queue);
     VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST);
@@ -19508,11 +19523,14 @@ static void d3d12_command_queue_flush_bind_sparse(struct d3d12_command_queue *co
     vkd3d_queue_timeline_trace_complete_execute(&command_queue->device->queue_timeline_trace, &command_queue->fence_worker, cookie);
 
     cookie = vkd3d_queue_timeline_trace_register_sparse(&command_queue->device->queue_timeline_trace, command_queue->sparse.total_tiles);
-    if (vkd3d_queue_timeline_trace_cookie_is_valid(cookie))
-        if (FAILED(vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, &cookie)))
-            ERR("Failed to enqueue timeline semaphore.\n");
+
+    if (FAILED(vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, &cookie)))
+        ERR("Failed to enqueue timeline semaphore.\n");
 
 cleanup:
+    for (i = 0; i < command_queue->sparse.tracked_count; i++)
+        d3d12_resource_decref(command_queue->sparse.tracked[i].resource);
+
     for (i = 0; i < command_queue->sparse.buffer_binds_count; i++)
         vkd3d_free((void *)command_queue->sparse.buffer_binds[i].pBinds);
     for (i = 0; i < command_queue->sparse.image_binds_count; i++)
