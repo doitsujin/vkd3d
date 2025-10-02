@@ -5429,6 +5429,7 @@ void test_tight_resource_alignment(void)
 {
     D3D12_FEATURE_DATA_TIGHT_ALIGNMENT tight_alignment;
     D3D12_RESOURCE_DESC res_desc[8], queried_desc;
+    D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12;
     D3D12_RESOURCE_ALLOCATION_INFO1 res_infos[8];
     D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5;
     D3D12_RESOURCE_ALLOCATION_INFO alloc_info;
@@ -5484,6 +5485,8 @@ void test_tight_resource_alignment(void)
     ID3D12Device_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
     memset(&options5, 0, sizeof(options5));
     ID3D12Device_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5));
+    memset(&options12, 0, sizeof(options12));
+    ID3D12Device_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12));
     memset(&tight_alignment, 0, sizeof(tight_alignment));
     ID3D12Device_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_TIGHT_ALIGNMENT, &tight_alignment, sizeof(tight_alignment));
 
@@ -5774,7 +5777,7 @@ void test_tight_resource_alignment(void)
         skip("Heap tier 2 not supported, skipping placed resource tests.\n");
     }
 
-    if (options5.RaytracingTier)
+    if (options5.RaytracingTier && options12.EnhancedBarriersSupported)
     {
         /* Test querying explicit RTAS resource. Again, no observed impact. */
         res_desc[0].Flags |= D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE;
