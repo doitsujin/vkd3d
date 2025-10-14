@@ -1136,13 +1136,20 @@ HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
      * make it so that 4M and 64k are size compatible. Try querying memory requirements without image alignment
      * control to get the maximum. Do not pad the allocation based on this, since we select between 64k and 4M
      * alignment at resource creation time based on the heap and creation infos. */
-    if (create_info.image_alignment_control.maximumRequestedAlignment != 0 && desc->SampleDesc.Count > 1 &&
-        desc->Alignment == D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
+    if (create_info.image_alignment_control.maximumRequestedAlignment != 0 && desc->SampleDesc.Count > 1)
     {
+        ERR("requested alignment: %"PRIu64".\n", desc->Alignment);
+
         /* 0 is effectively an ignore. */
-        create_info.image_alignment_control.maximumRequestedAlignment = 0;
+        create_info.image_alignment_control.maximumRequestedAlignment = 0u;
         VK_CALL(vkGetDeviceImageMemoryRequirements(device->vk_device, &requirement_info, &requirements));
         allocation_info->SizeInBytes = max(requirements.memoryRequirements.size, allocation_info->SizeInBytes);
+        ERR("implicit -> size: %"PRIu64", align: %"PRIu64".\n", requirements.memoryRequirements.size, requirements.memoryRequirements.alignment);
+
+        create_info.image_alignment_control.maximumRequestedAlignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+        VK_CALL(vkGetDeviceImageMemoryRequirements(device->vk_device, &requirement_info, &requirements));
+        allocation_info->SizeInBytes = max(requirements.memoryRequirements.size, allocation_info->SizeInBytes);
+        ERR("explicit -> size: %"PRIu64", align: %"PRIu64".\n", requirements.memoryRequirements.size, requirements.memoryRequirements.alignment);
     }
 
     /* Do not report alignments greater than DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT
@@ -4325,6 +4332,9 @@ HRESULT d3d12_resource_create_placed(struct d3d12_device *device, const D3D12_RE
 
         /* Align manually. This works because we padded the required allocation size reported to the app. */
         VK_CALL(vkGetImageMemoryRequirements(device->vk_device, object->res.vk_image, &memory_requirements));
+
+        if (object->desc.SampleDesc.Count > 1 && object->desc.Alignment != D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
+            memory_requirements.size = align(memory_requirements.size, D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT);
 
         /* For SMALL_RESOURCE_PLACEMENT when we have workaround active,
          * verify that application did in fact check alignment requirements.
