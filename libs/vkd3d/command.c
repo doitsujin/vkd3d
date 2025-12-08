@@ -13522,7 +13522,7 @@ static void d3d12_command_list_clear_attachment(struct d3d12_command_list *list,
          * the render pass isn't active and we're only going to clear
          * a sub-region of the image, or one of the aspects to clear
          * uses a read-only layout in the current render pass */
-        if (full_clear)
+        if (full_clear && !(resource->heap_flags & D3D12_HEAP_FLAG_SHARED))
         {
             d3d12_command_list_defer_attachment_clear(list, resource,
                     view, clear_aspects, clear_value);
