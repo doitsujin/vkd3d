@@ -3119,6 +3119,16 @@ struct vkd3d_query_ranges
     size_t count;
 };
 
+#define VKD3D_MAX_PENDING_BARRIERS (4)
+
+struct vkd3d_global_barrier
+{
+    VkMemoryBarrier2 synced;
+
+    VkMemoryBarrier2 pending[VKD3D_MAX_PENDING_BARRIERS];
+    unsigned int pending_count;
+};
+
 struct d3d12_command_list
 {
     d3d12_command_list_iface ID3D12GraphicsCommandList_iface;
@@ -3246,6 +3256,8 @@ struct d3d12_command_list
     struct d3d12_resource **retained_resources;
     size_t retained_resources_size;
     size_t retained_resources_count;
+
+    struct vkd3d_global_barrier global_barrier;
 
     struct hash_map query_resolve_lut;
 

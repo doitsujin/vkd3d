@@ -3262,6 +3262,164 @@ void d3d12_command_list_invalidate_current_pipeline(struct d3d12_command_list *l
     }
 }
 
+#define VKD3D_PIPELINE_STAGES_ALL_TRANSFER (                    \
+        VK_PIPELINE_STAGE_2_COPY_BIT |                          \
+        VK_PIPELINE_STAGE_2_BLIT_BIT |                          \
+        VK_PIPELINE_STAGE_2_CLEAR_BIT |                         \
+        VK_PIPELINE_STAGE_2_RESOLVE_BIT |                       \
+        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_COPY_BIT_KHR)
+
+#define VKD3D_PIPELINE_STAGES_ALL_META (                        \
+        VK_PIPELINE_STAGE_2_HOST_BIT |                          \
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT |                   \
+        VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT |                \
+        VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT |     \
+        VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT |                  \
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
+
+static void d3d12_command_list_reset_global_barrier(struct d3d12_command_list *list)
+{
+    memset(&list->global_barrier.synced, 0, sizeof(list->global_barrier.synced));
+    list->global_barrier.synced.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+
+    list->global_barrier.pending_count = 0u;
+}
+
+static void d3d12_command_list_emit_global_barrier(struct d3d12_command_list *list)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
+    VkMemoryBarrier2 *synced = &list->global_barrier.synced;
+    VkDependencyInfo dep_info;
+    bool needs_barrier;
+    unsigned int i;
+
+    if (!list->global_barrier.pending_count)
+        return;
+
+    /* Check if any of the pending barriers define a dependency that was not
+     * already synchronized by the previous barrier, and skip it if not */
+    needs_barrier = false;
+
+    for (i = 0u; i < list->global_barrier.pending_count; i++)
+    {
+        VkMemoryBarrier2 *pending = &list->global_barrier.pending[i];
+
+        needs_barrier = needs_barrier ||
+            (pending->srcStageMask & ~synced->srcStageMask) ||
+            (pending->srcAccessMask & ~synced->srcAccessMask) ||
+            (pending->dstStageMask & ~synced->dstStageMask) ||
+            (pending->dstAccessMask & ~synced->dstAccessMask);
+    }
+
+    if (needs_barrier)
+    {
+        /* If we do need a barrier, keep even the redundant so we
+         * can potentially elide more barriers going forward */
+        memset(synced, 0, sizeof(*synced));
+        synced->sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+
+        for (i = 0u; i < list->global_barrier.pending_count; i++)
+        {
+            VkMemoryBarrier2 *pending = &list->global_barrier.pending[i];
+            synced->srcStageMask |= pending->srcStageMask;
+            synced->srcAccessMask |= pending->srcAccessMask;
+            synced->dstStageMask |= pending->dstStageMask;
+            synced->dstAccessMask |= pending->dstAccessMask;
+        }
+
+        memset(&dep_info, 0, sizeof(dep_info));
+        dep_info.memoryBarrierCount = 1;
+        dep_info.pMemoryBarriers = synced;
+
+        d3d12_command_list_debug_mark_begin_region(list, "Global barrier");
+        VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
+        d3d12_command_list_debug_mark_end_region(list);
+    }
+    else
+    {
+        d3d12_command_list_debug_mark_label(list, "Elided global barrier", 1.0f, 1.0f, 0.5f, 1.0f);
+    }
+
+    list->global_barrier.pending_count = 0u;
+}
+
+static void d3d12_command_list_emit_and_reset_global_barrier(struct d3d12_command_list *list)
+{
+    d3d12_command_list_emit_global_barrier(list);
+    d3d12_command_list_reset_global_barrier(list);
+}
+
+static void d3d12_command_list_sync_command(struct d3d12_command_list *list, VkPipelineStageFlags2 dst_stages)
+{
+    bool flush_pending;
+    unsigned int i;
+
+    if (!list->global_barrier.pending_count)
+        return;
+
+    /* Don't bother digesting all the various meta stage flags, we either can't
+     * really avoid barriers with those anyway, or they are graphics-related. */
+    flush_pending = !!(dst_stages & VKD3D_PIPELINE_STAGES_ALL_META);
+
+    if (!flush_pending)
+    {
+        const VkMemoryBarrier2 *synced = &list->global_barrier.synced;
+
+        /* Check for ALL_TRANSFER if any of the individual flags are set, and
+         * check for all individual transfer flags if ALL_TRANSFER is set */
+        if (dst_stages & (VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VKD3D_PIPELINE_STAGES_ALL_TRANSFER))
+            dst_stages |= VKD3D_PIPELINE_STAGES_ALL_TRANSFER;
+        else if (dst_stages & VKD3D_PIPELINE_STAGES_ALL_TRANSFER)
+            dst_stages |= VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+
+        /* Flush pending global barrier if it targets any of the stages executed
+         * in subsequent commands, and if the previous barrier did not synchronize
+         * all source stages of that barrier against the given destination stages */
+        for (i = 0u; i < list->global_barrier.pending_count; i++)
+        {
+            const VkMemoryBarrier2 *pending = &list->global_barrier.pending[i];
+
+            if (pending->dstStageMask & dst_stages)
+            {
+                flush_pending |= !(synced->dstStageMask & dst_stages) ||
+                        !(synced->srcStageMask & pending->srcStageMask) ||
+                        !(synced->srcAccessMask & pending->srcAccessMask);
+            }
+        }
+    }
+
+    if (flush_pending)
+        d3d12_command_list_emit_global_barrier(list);
+}
+
+static void d3d12_command_list_issue_barrier(struct d3d12_command_list *list, const VkMemoryBarrier2 *barrier)
+{
+    unsigned int i;
+
+    /* FIXME handle stage/accessFlags3 if we start using them */
+    assert(!barrier->pNext);
+
+    if (list->global_barrier.pending_count >= VKD3D_MAX_PENDING_BARRIERS)
+        d3d12_command_list_emit_global_barrier(list);
+
+    for (i = 0u; i < list->global_barrier.pending_count; i++)
+    {
+        VkMemoryBarrier2* pending = &list->global_barrier.pending[i];
+
+        if (pending->srcStageMask == barrier->srcStageMask ||
+                pending->dstStageMask == barrier->dstStageMask)
+        {
+            pending->srcStageMask |= barrier->srcStageMask;
+            pending->srcAccessMask |= barrier->srcAccessMask;
+            pending->dstStageMask |= barrier->dstStageMask;
+            pending->dstAccessMask |= barrier->dstAccessMask;
+            return;
+        }
+    }
+
+    list->global_barrier.pending[list->global_barrier.pending_count++] = *barrier;
+}
+
 static D3D12_RECT d3d12_get_image_rect(struct d3d12_resource *resource, const VkImageSubresourceLayers *subresource)
 {
     VkExtent3D mip_extent = d3d12_resource_desc_get_vk_subresource_extent(&resource->desc, resource->format, subresource);
