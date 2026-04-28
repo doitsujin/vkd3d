@@ -5214,10 +5214,13 @@ static DXGI_FORMAT vkd3d_structured_srv_to_texel_buffer_dxgi_format(unsigned int
         return DXGI_FORMAT_R32G32_UINT;
     if ((stride & 3) == 0)
         return DXGI_FORMAT_R32_UINT;
-
     /* It's a bit unclear what happens with strides 2 and 6.
      * This basically never comes up in practice, so just pick something safe-ish. */
-    return DXGI_FORMAT_R16_UINT;
+    if ((stride & 1) == 0)
+        return DXGI_FORMAT_R16_UINT;
+
+    ERR("frog\n");
+    return DXGI_FORMAT_R8_UINT;
 }
 
 static DXGI_FORMAT vkd3d_structured_uav_to_texel_buffer_dxgi_format(unsigned int stride)
@@ -5230,8 +5233,11 @@ static DXGI_FORMAT vkd3d_structured_uav_to_texel_buffer_dxgi_format(unsigned int
      * Just keep it simple here. */
     if ((stride & 3) == 0)
         return DXGI_FORMAT_R32_UINT;
-    else
+    if ((stride & 1) == 0)
         return DXGI_FORMAT_R16_UINT;
+
+    ERR("frog\n");
+    return DXGI_FORMAT_R8_UINT;
 }
 
 static bool vkd3d_create_buffer_view_for_resource(struct d3d12_device *device,
