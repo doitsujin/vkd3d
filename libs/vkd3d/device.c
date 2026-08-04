@@ -1320,6 +1320,7 @@ static void vkd3d_instance_apply_global_shader_quirks(void)
     static const struct override overrides[] =
     {
         { VKD3D_CONFIG_FLAG_STATIC(FORCE_NO_INVARIANT_POSITION), VKD3D_SHADER_QUIRK_INVARIANT_POSITION, true },
+        { VKD3D_CONFIG_FLAG_STATIC(FORCE_DESCRIPTOR_HEAP_ROBUSTNESS), VKD3D_SHADER_QUIRK_DESCRIPTOR_HEAP_ROBUSTNESS, false },
     };
     bool eq_test;
     unsigned int i;
