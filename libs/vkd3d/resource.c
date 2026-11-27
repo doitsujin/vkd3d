@@ -188,9 +188,6 @@ VkBufferUsageFlags2 vkd3d_device_get_buffer_usage(struct d3d12_device *device, c
                 | VK_BUFFER_USAGE_2_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT;
     }
 
-    if (device->device_info.memory_decompression_features.memoryDecompression)
-        usage |= VK_BUFFER_USAGE_2_MEMORY_DECOMPRESSION_BIT_EXT;
-
     if (d3d12_device_supports_ray_tracing_tier_1_0(device))
     {
         /* Allows us to place GENERIC acceleration structures on top of VkBuffers.
